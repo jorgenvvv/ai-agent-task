@@ -44,6 +44,10 @@ class KnowledgeBaseTest {
                 # CI/CD pipeline
 
                 Pipeline etapid: build, test, security, package, deploy.
+
+                ## Hea tava
+
+                Pinni toolide versioonid.
                 """, StandardCharsets.UTF_8);
         Files.writeString(tempDir.resolve("code-review.md"),
                 """
@@ -59,7 +63,7 @@ class KnowledgeBaseTest {
                 """, StandardCharsets.UTF_8);
         Files.writeString(tempDir.resolve("notes.txt"), "ignore me", StandardCharsets.UTF_8);
 
-        knowledgeBase = new KnowledgeBase(tempDir.toString());
+        knowledgeBase = new KnowledgeBase(tempDir.toString(), 3);
         knowledgeBase.loadDocuments();
     }
 
@@ -101,7 +105,7 @@ class KnowledgeBaseTest {
     @Test
     void searchFindsGitlabDocument() {
         List<KnowledgeDocument> results = knowledgeBase.search("gitlab");
-        assertEquals(1, results.size());
+        assertFalse(results.isEmpty());
         assertEquals("gitlab-access.md", results.getFirst().fileName());
         assertTrue(results.getFirst().content().contains("teenuste portaalis"));
     }
@@ -112,20 +116,43 @@ class KnowledgeBaseTest {
         List<KnowledgeDocument> upper = knowledgeBase.search("KUBERNETES");
         List<KnowledgeDocument> mixed = knowledgeBase.search("KubeRnetes");
 
-        assertEquals(1, lower.size());
+        assertFalse(lower.isEmpty());
         assertEquals(lower, upper);
         assertEquals(lower, mixed);
         assertEquals("kubernetes-deploy.md", lower.getFirst().fileName());
     }
 
     @Test
-    void searchRequiresAllTokens() {
+    void searchFindsGitlabDespiteStopWordsAndShortQuery() {
         List<KnowledgeDocument> both = knowledgeBase.search("gitlab ligipääs");
-        assertEquals(1, both.size());
+        assertFalse(both.isEmpty());
         assertEquals("gitlab-access.md", both.getFirst().fileName());
 
-        List<KnowledgeDocument> none = knowledgeBase.search("gitlab mars");
-        assertTrue(none.isEmpty());
+        List<KnowledgeDocument> shortQuestion = knowledgeBase.search("gitlab ligipääs?");
+        assertFalse(shortQuestion.isEmpty());
+        assertEquals("gitlab-access.md", shortQuestion.getFirst().fileName());
+
+        List<KnowledgeDocument> partial = knowledgeBase.search("gitlab mars");
+        assertFalse(partial.isEmpty());
+        assertEquals("gitlab-access.md", partial.getFirst().fileName());
+    }
+
+    @Test
+    void searchRespectsTopK() {
+        List<KnowledgeDocument> results = knowledgeBase.search("pipeline deploy merge");
+        assertTrue(results.size() <= 3);
+
+        KnowledgeBase topOne = new KnowledgeBase(tempDir.toString(), 1);
+        topOne.loadDocuments();
+        assertEquals(1, topOne.search("pipeline deploy merge git").size());
+    }
+
+    @Test
+    void searchMatchesPluralStemTavad() {
+        assertTrue(KnowledgeBase.containsTerm("hea tava", "tavad"));
+        List<KnowledgeDocument> results = knowledgeBase.search("ci pipeline tavad");
+        assertFalse(results.isEmpty());
+        assertEquals("cicd-pipeline.md", results.getFirst().fileName());
     }
 
     @Test
@@ -134,6 +161,14 @@ class KnowledgeBaseTest {
         assertTrue(knowledgeBase.search("").isEmpty());
         assertTrue(knowledgeBase.search("   ").isEmpty());
         assertTrue(knowledgeBase.search(null).isEmpty());
+    }
+
+    @Test
+    void excerptTruncatesLongContent() {
+        String longText = "a".repeat(600);
+        String excerpt = KnowledgeBase.excerpt(longText, 500);
+        assertTrue(excerpt.length() <= 501);
+        assertTrue(excerpt.endsWith("…"));
     }
 
     @Test
@@ -188,8 +223,9 @@ class KnowledgeBaseTest {
     @Test
     void missingDirectoryYieldsEmptyKnowledgeBase(@TempDir Path emptyParent) {
         Path missing = emptyParent.resolve("no-such-knowledge-dir");
-        KnowledgeBase empty = new KnowledgeBase(missing.toString());
+        KnowledgeBase empty = new KnowledgeBase(missing.toString(), 3);
         empty.loadDocuments();
+
         assertTrue(empty.getDocuments().isEmpty());
         assertTrue(empty.listTopics().isEmpty());
         assertTrue(empty.search("gitlab").isEmpty());

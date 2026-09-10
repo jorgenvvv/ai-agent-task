@@ -16,6 +16,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 @Service
@@ -23,11 +25,33 @@ public class KnowledgeBase {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeBase.class);
 
+    private static final Pattern TOKEN_SPLIT = Pattern.compile("[^\\p{L}\\p{N}]+");
+    private static final int MIN_TOKEN_LENGTH = 2;
+    private static final double TITLE_BOOST = 3.0;
+    private static final double FILE_NAME_BOOST = 2.0;
+    private static final double CONTENT_TERM_WEIGHT = 1.0;
+    public static final int DEFAULT_EXCERPT_LENGTH = 500;
+
+    private static final Set<String> STOP_WORDS = Set.of(
+            "ja", "ning", "voi", "või", "on", "ei", "mis", "kuidas", "kas", "mul", "saan",
+            "ole", "see", "need", "kui", "ka", "et", "me", "te", "oma", "seda", "selle",
+            "nende", "oli", "oleks", "saab", "peab", "aga", "siis", "seal", "siin",
+            "milline", "millal", "miks", "kust", "kuhu", "kes", "kelle", "hea", "head",
+
+            "the", "a", "an", "to", "for", "of", "in", "is", "are", "was", "were",
+            "be", "been", "and", "or", "not", "with", "from", "by", "as", "at", "it",
+            "this", "that", "how", "what", "when", "where", "which", "who", "can", "do"
+    );
+
     private final Path baseDir;
+    private final int topK;
     private List<KnowledgeDocument> documents = List.of();
 
-    public KnowledgeBase(@Value("${app.knowledge.path:knowledge}") String knowledgePath) {
+    public KnowledgeBase(
+            @Value("${app.knowledge.path:knowledge}") String knowledgePath,
+            @Value("${app.knowledge.search.top-k:3}") int topK) {
         this.baseDir = Path.of(knowledgePath).toAbsolutePath().normalize();
+        this.topK = Math.max(1, topK);
     }
 
     @PostConstruct
@@ -67,8 +91,15 @@ public class KnowledgeBase {
             return List.of();
         }
 
+        record Scored(KnowledgeDocument doc, double score) {}
+
         return documents.stream()
-                .filter(doc -> matchesAllTokens(doc, tokens))
+                .map(doc -> new Scored(doc, scoreDocument(doc, tokens)))
+                .filter(s -> s.score() > 0)
+                .sorted(Comparator.comparingDouble(Scored::score).reversed()
+                        .thenComparing(s -> s.doc().fileName()))
+                .limit(topK)
+                .map(Scored::doc)
                 .toList();
     }
 
@@ -143,24 +174,65 @@ public class KnowledgeBase {
         return fileNameFallback;
     }
 
-    private static List<String> tokenize(String query) {
-        String[] parts = query.toLowerCase(Locale.ROOT).trim().split("\\s+");
+    static List<String> tokenize(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        String lower = text.toLowerCase(Locale.ROOT).trim();
+        String[] parts = TOKEN_SPLIT.split(lower);
         List<String> tokens = new ArrayList<>();
         for (String part : parts) {
-            if (!part.isBlank()) {
+            if (part.length() >= MIN_TOKEN_LENGTH && !STOP_WORDS.contains(part)) {
                 tokens.add(part);
             }
         }
         return tokens;
     }
 
-    private static boolean matchesAllTokens(KnowledgeDocument doc, List<String> tokens) {
-        String haystack = (doc.title() + "\n" + doc.content()).toLowerCase(Locale.ROOT);
-        for (String token : tokens) {
-            if (!haystack.contains(token)) {
-                return false;
+    private static double scoreDocument(KnowledgeDocument doc, List<String> queryTokens) {
+        String titleLower = doc.title() == null ? "" : doc.title().toLowerCase(Locale.ROOT);
+        String fileLower = doc.fileName() == null ? "" : doc.fileName().toLowerCase(Locale.ROOT);
+        String contentLower = doc.content() == null ? "" : doc.content().toLowerCase(Locale.ROOT);
+
+        double score = 0;
+        for (String term : queryTokens) {
+            if (containsTerm(titleLower, term)) {
+                score += TITLE_BOOST;
+            }
+            if (containsTerm(fileLower, term)) {
+                score += FILE_NAME_BOOST;
+            }
+            if (containsTerm(contentLower, term)) {
+                score += CONTENT_TERM_WEIGHT;
             }
         }
-        return true;
+        return score;
+    }
+
+    static boolean containsTerm(String haystack, String term) {
+        if (haystack == null || haystack.isEmpty() || term == null || term.isEmpty()) {
+            return false;
+        }
+        if (haystack.contains(term)) {
+            return true;
+        }
+        if (term.length() > 3 && term.endsWith("d")) {
+            String stem = term.substring(0, term.length() - 1);
+            if (stem.length() >= MIN_TOKEN_LENGTH && haystack.contains(stem)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static String excerpt(String content, int maxLen) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        String normalized = content.strip();
+        if (normalized.length() <= maxLen) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLen).stripTrailing() + "…";
     }
 }
