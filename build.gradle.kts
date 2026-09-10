@@ -29,7 +29,34 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+tasks.test {
+    useJUnitPlatform {
+        excludeTags("integration")
+    }
+}
 
-tasks.withType<Test> {
-    useJUnitPlatform()
+tasks.register<Test>("integrationTest") {
+    description = "OpenAI integration tests (requires OPENAI_API_KEY)"
+    group = "verification"
+    shouldRunAfter(tasks.test)
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform {
+        includeTags("integration")
+    }
+    reports {
+        html.required.set(true)
+        junitXml.required.set(true)
+    }
+
+    doFirst {
+        val key = System.getenv("OPENAI_API_KEY")
+        if (key.isNullOrBlank()) {
+            throw GradleException(
+                "OPENAI_API_KEY is required for integrationTest. " +
+                        "Export the key (e.g. export OPENAI_API_KEY=sk-...) and re-run " +
+                        "./gradlew integrationTest"
+            )
+        }
+    }
 }

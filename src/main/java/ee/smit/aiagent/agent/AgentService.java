@@ -5,6 +5,11 @@ import ee.smit.aiagent.model.AgentLlmResponse;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.model.AskResponse;
 import ee.smit.aiagent.model.SourceDto;
+import ee.smit.aiagent.model.GuardDecision;
+import ee.smit.aiagent.model.GuardReasonCode;
+import ee.smit.aiagent.security.InputGuardService;
+import ee.smit.aiagent.security.SensitiveDataRedactor;
+import ee.smit.aiagent.security.SessionIdHasher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -28,9 +33,16 @@ public class AgentService {
     private static final String SOURCE_CITATION_MARKER = "[allikas:";
     private static final Pattern SESSION_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]{1,100}$");
 
+    private static final String DEFAULT_REFUSAL_ANSWER =
+            "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
+    private static final String REFUSAL_REASON_GUARD = "Kahtlane või lubamatu sisend";
+    private static final String REFUSAL_REASON_SENSITIVE = "Päring sisaldab tundlikke andmeid";
+
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
     private final ToolSourcesBuffer sourcesBuffer;
+    private final InputGuardService inputGuardService;
+    private final SensitiveDataRedactor sensitiveDataRedactor;
     private final String openAiApiKey;
     private final boolean sessionEnabled;
 
@@ -38,25 +50,47 @@ public class AgentService {
             ChatClient chatClient,
             ChatMemory chatMemory,
             ToolSourcesBuffer sourcesBuffer,
+            InputGuardService inputGuardService,
+            SensitiveDataRedactor sensitiveDataRedactor,
             @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
             @Value("${app.agent.session.enabled:true}") boolean sessionEnabled) {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.sourcesBuffer = sourcesBuffer;
+        this.inputGuardService = inputGuardService;
+        this.sensitiveDataRedactor = sensitiveDataRedactor;
         this.openAiApiKey = openAiApiKey;
         this.sessionEnabled = sessionEnabled;
     }
 
     public AskResponse ask(AskRequest request) {
-        ensureApiKeyConfigured();
         sourcesBuffer.clear();
 
+        String question = request.question();
+        int questionLength = question != null ? question.length() : 0;
+        String sessionHash = SessionIdHasher.hash(request.sessionId());
+
+        GuardDecision guard = inputGuardService.analyze(question);
+        if (!guard.allowed()) {
+            logRejected(guard.reasonCode(), sessionHash, questionLength);
+            return refusedResponse(guard.reasonCode());
+        }
+
+        SensitiveDataRedactor.RedactionResult redaction = sensitiveDataRedactor.process(question);
+        if (redaction.refused()) {
+            logRejected(GuardReasonCode.SENSITIVE_DATA, sessionHash, questionLength);
+            return refusedResponse(GuardReasonCode.SENSITIVE_DATA);
+        }
+
+        ensureApiKeyConfigured();
+
         String sessionKey = resolveSessionKey(request.sessionId());
+        String userMessage = redaction.text();
 
         AgentLlmResponse llmResponse;
         try {
             ChatClient.ChatClientRequestSpec spec = chatClient.prompt()
-                    .user(request.question());
+                    .user(userMessage);
 
             if (sessionKey != null) {
                 spec = spec
@@ -85,6 +119,18 @@ public class AgentService {
         return applyPostRules(llmResponse, sources);
     }
 
+    private void logRejected(GuardReasonCode reasonCode, String sessionHash, int length) {
+        log.warn("prompt_injection_rejected sessionHash={} reasonCode={} length={}",
+                sessionHash, reasonCode, length);
+    }
+
+    static AskResponse refusedResponse(GuardReasonCode reasonCode) {
+        String reason = reasonCode == GuardReasonCode.SENSITIVE_DATA
+                ? REFUSAL_REASON_SENSITIVE
+                : REFUSAL_REASON_GUARD;
+        return new AskResponse(DEFAULT_REFUSAL_ANSWER, List.of(), "low", true, reason);
+    }
+
     String resolveSessionKey(String sessionId) {
         if (!sessionEnabled) {
             return null;
@@ -92,13 +138,13 @@ public class AgentService {
         if (!StringUtils.hasText(sessionId)) {
             return null;
         }
-        String key = sessionId.trim();
-        if (!SESSION_ID_PATTERN.matcher(key).matches()) {
+        String trimmed = sessionId.trim();
+        if (!SESSION_ID_PATTERN.matcher(trimmed).matches()) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "sessionId must match [a-zA-Z0-9_-]{1,100}");
         }
-        return key;
+        return trimmed;
     }
 
     private void ensureApiKeyConfigured() {

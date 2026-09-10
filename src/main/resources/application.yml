@@ -23,3 +23,7 @@ app:
       max-messages: ${AGENT_SESSION_MAX_MESSAGES:20}
       max-sessions: ${AGENT_SESSION_MAX_SESSIONS:1000}
       ttl: ${AGENT_SESSION_TTL:45m}
+    rate-limit:
+      enabled: ${AGENT_RATE_LIMIT_ENABLED:true}
+      requests-per-minute: ${AGENT_RATE_LIMIT_RPM:10}
+      trust-forwarded-headers: ${AGENT_TRUST_FORWARDED_HEADERS:false}
