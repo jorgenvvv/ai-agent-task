@@ -1,4 +1,4 @@
-package ee.smit.aiagent.knowledge;
+package ee.smit.aiagent.model;
 
 public record KnowledgeDocument(
         String fileName,

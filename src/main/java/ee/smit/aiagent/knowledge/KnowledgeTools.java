@@ -1,5 +1,6 @@
 package ee.smit.aiagent.knowledge;
 
+import ee.smit.aiagent.model.KnowledgeDocument;
 import ee.smit.aiagent.model.SourceDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -84,6 +84,18 @@ class AgentControllerTest {
     }
 
     @Test
+    void sessionIdOverMaxLengthReturns400BeforeService() throws Exception {
+        String longSessionId = "s".repeat(101);
+        mockMvc.perform(post("/api/v1/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"ok\",\"sessionId\":\"" + longSessionId + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
+
+        verify(agentService, never()).ask(any());
+    }
+
+    @Test
     void happyPathReturnsSpecJsonShape() throws Exception {
         AskResponse body = new AskResponse(
                 "Taotle ligipääsu teenuste portaalis. [allikas: gitlab-access.md]",
