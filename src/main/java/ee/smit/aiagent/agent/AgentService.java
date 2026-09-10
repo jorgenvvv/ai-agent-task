@@ -8,6 +8,8 @@ import ee.smit.aiagent.model.SourceDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -17,36 +19,52 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 @Service
 public class AgentService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentService.class);
     private static final String SOURCE_CITATION_MARKER = "[allikas:";
+    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]{1,100}$");
 
     private final ChatClient chatClient;
+    private final ChatMemory chatMemory;
     private final ToolSourcesBuffer sourcesBuffer;
     private final String openAiApiKey;
+    private final boolean sessionEnabled;
 
     public AgentService(
             ChatClient chatClient,
+            ChatMemory chatMemory,
             ToolSourcesBuffer sourcesBuffer,
-            @Value("${spring.ai.openai.api-key:}") String openAiApiKey) {
+            @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
+            @Value("${app.agent.session.enabled:true}") boolean sessionEnabled) {
         this.chatClient = chatClient;
+        this.chatMemory = chatMemory;
         this.sourcesBuffer = sourcesBuffer;
         this.openAiApiKey = openAiApiKey;
+        this.sessionEnabled = sessionEnabled;
     }
 
     public AskResponse ask(AskRequest request) {
         ensureApiKeyConfigured();
         sourcesBuffer.clear();
 
+        String sessionKey = resolveSessionKey(request.sessionId());
+
         AgentLlmResponse llmResponse;
         try {
-            llmResponse = chatClient.prompt()
-                    .user(request.question())
-                    .call()
-                    .entity(AgentLlmResponse.class);
+            ChatClient.ChatClientRequestSpec spec = chatClient.prompt()
+                    .user(request.question());
+
+            if (sessionKey != null) {
+                spec = spec
+                        .advisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                        .advisors(a -> a.param(ChatMemory.CONVERSATION_ID, sessionKey));
+            }
+
+            llmResponse = spec.call().entity(AgentLlmResponse.class);
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
@@ -65,6 +83,22 @@ public class AgentService {
 
         List<SourceDto> sources = sourcesBuffer.snapshot();
         return applyPostRules(llmResponse, sources);
+    }
+
+    String resolveSessionKey(String sessionId) {
+        if (!sessionEnabled) {
+            return null;
+        }
+        if (!StringUtils.hasText(sessionId)) {
+            return null;
+        }
+        String key = sessionId.trim();
+        if (!SESSION_ID_PATTERN.matcher(key).matches()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "sessionId must match [a-zA-Z0-9_-]{1,100}");
+        }
+        return key;
     }
 
     private void ensureApiKeyConfigured() {
