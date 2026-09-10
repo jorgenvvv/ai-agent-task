@@ -19,19 +19,19 @@ class HealthControllerTest {
 
     @Test
     void healthReturns200() throws Exception {
-        mockMvc.perform(get("/api/health"))
+        mockMvc.perform(get("/api/v1/health"))
                 .andExpect(status().isOk());
     }
 
     @Test
     void healthResponseBodyIsUp() throws Exception {
-        mockMvc.perform(get("/api/health"))
+        mockMvc.perform(get("/api/v1/health"))
                 .andExpect(jsonPath("$.status").value("UP"));
     }
 
     @Test
     void healthContentTypeIsJson() throws Exception {
-        mockMvc.perform(get("/api/health"))
+        mockMvc.perform(get("/api/v1/health"))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON));
     }
 }

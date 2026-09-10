@@ -92,10 +92,12 @@ class KnowledgeToolsTest {
     }
 
     @Test
-    void listTopicsReturnsFilesWithoutSources() {
+    void listTopicsReturnsFilesAndRegistersTopicSources() {
         List<Map<String, String>> topics = tools.list_topics();
         assertEquals(2, topics.size());
-        assertTrue(sourcesBuffer.snapshot().isEmpty());
+        assertEquals(2, sourcesBuffer.snapshot().size());
+        assertTrue(sourcesBuffer.snapshot().stream().allMatch(s ->
+                s.file() != null && s.excerpt() != null && !s.excerpt().isBlank()));
     }
 
     @Test

@@ -28,7 +28,7 @@ public class KnowledgeTools {
         this.sourcesBuffer = sourcesBuffer;
     }
 
-    @Tool(description = "List available knowledge base topics. Returns file name and title for each document.")
+    @Tool(description = "List available knowledge base topics. Returns file name and title for each document. Use for overview questions like which topics are available.")
     public List<Map<String, String>> list_topics() {
         try {
             List<Map<String, String>> topics = new ArrayList<>();
@@ -37,6 +37,10 @@ public class KnowledgeTools {
                 item.put("file", doc.fileName());
                 item.put("title", doc.title());
                 topics.add(item);
+                String excerpt = doc.title() != null && !doc.title().isBlank()
+                        ? doc.title()
+                        : doc.fileName();
+                sourcesBuffer.add(new SourceDto(doc.fileName(), doc.title(), excerpt));
             }
             return topics;
         } catch (Exception e) {

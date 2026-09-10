@@ -4,6 +4,8 @@ import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.model.AskResponse;
 import ee.smit.aiagent.model.SourceDto;
+import ee.smit.aiagent.security.InputGuardService;
+import ee.smit.aiagent.security.SensitiveDataRedactor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
@@ -62,7 +64,14 @@ class AgentServiceSessionTest {
         };
 
         ChatClient chatClient = ChatClient.builder(chatModel).build();
-        service = new AgentService(chatClient, chatMemory, sourcesBuffer, "test-key", true);
+        service = new AgentService(
+                chatClient,
+                chatMemory,
+                sourcesBuffer,
+                new InputGuardService(),
+                new SensitiveDataRedactor(),
+                "test-key",
+                true);
     }
 
     @Test
@@ -129,6 +138,8 @@ class AgentServiceSessionTest {
                         .build()).build(),
                 chatMemory,
                 sourcesBuffer,
+                new InputGuardService(),
+                new SensitiveDataRedactor(),
                 "test-key",
                 false);
         assertNull(disabled.resolveSessionKey("valid-id"));
