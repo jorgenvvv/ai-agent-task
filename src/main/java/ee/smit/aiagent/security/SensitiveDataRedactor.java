@@ -22,11 +22,20 @@ public class SensitiveDataRedactor {
 
     private static final List<Pattern> REFUSE_PATTERNS = List.of(
             Pattern.compile("\\bsk-[A-Za-z0-9_\\-]{10,}\\b"),
+            Pattern.compile("(?i)\\bbearer\\s+[A-Za-z0-9\\-._~+/]+=*"),
+
             Pattern.compile("(?i)\\bpassword\\s*[:=]\\s*\\S+"),
+            Pattern.compile("(?i)\\bpassword\\s+is\\s+\\S+"),
             Pattern.compile("(?i)\\bpasswd\\s*[:=]\\s*\\S+"),
             Pattern.compile("(?i)\\bapi[_-]?key\\s*[:=]\\s*\\S+"),
             Pattern.compile("(?i)\\bsecret\\s*[:=]\\s*\\S+"),
-            Pattern.compile("(?i)\\bbearer\\s+[A-Za-z0-9\\-._~+/]+=*")
+
+            Pattern.compile("(?i)\\bparool\\s*[:=]\\s*\\S+"),
+            Pattern.compile("(?i)\\bparool\\s+on\\s+\\S+"),
+            Pattern.compile("(?i)\\bsalasõna\\s*[:=]\\s*\\S+"),
+            Pattern.compile("(?i)\\bsalasõna\\s+on\\s+\\S+"),
+            Pattern.compile("(?i)\\bsalasona\\s*[:=]\\s*\\S+"),
+            Pattern.compile("(?i)\\bsalasona\\s+on\\s+\\S+")
     );
 
     private static final List<Pattern> MASK_PATTERNS = List.of(
@@ -35,22 +44,39 @@ public class SensitiveDataRedactor {
 
     private static final String MASK = "[REDACTED]";
 
+    public boolean containsSecret(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        for (Pattern pattern : REFUSE_PATTERNS) {
+            if (pattern.matcher(text).find()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public String maskPii(String text) {
+        if (text == null || text.isEmpty()) {
+            return text == null ? "" : text;
+        }
+        String redacted = text;
+        for (Pattern pattern : MASK_PATTERNS) {
+            Matcher matcher = pattern.matcher(redacted);
+            redacted = matcher.replaceAll(MASK);
+        }
+        return redacted;
+    }
+
     public RedactionResult process(String question) {
         if (question == null || question.isBlank()) {
             return RedactionResult.ok(question == null ? "" : question);
         }
 
-        for (Pattern pattern : REFUSE_PATTERNS) {
-            if (pattern.matcher(question).find()) {
-                return RedactionResult.refuse();
-            }
+        if (containsSecret(question)) {
+            return RedactionResult.refuse();
         }
 
-        String redacted = question;
-        for (Pattern pattern : MASK_PATTERNS) {
-            Matcher matcher = pattern.matcher(redacted);
-            redacted = matcher.replaceAll(MASK);
-        }
-        return RedactionResult.ok(redacted);
+        return RedactionResult.ok(maskPii(question));
     }
 }

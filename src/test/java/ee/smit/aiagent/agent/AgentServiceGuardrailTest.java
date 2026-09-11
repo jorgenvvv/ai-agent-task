@@ -136,4 +136,23 @@ class AgentServiceGuardrailTest {
         assertFalse(response.refused());
         assertEquals(1, callCount.get());
     }
+
+    @Test
+    void estonianPasswordRefusedWithoutCallingLlm() {
+        AskResponse response = service.ask(new AskRequest(
+                "Minu GitLabi parool on TEST-Parool-782!", null));
+        assertTrue(response.refused());
+        assertEquals(0, callCount.get());
+    }
+
+    @Test
+    void personalIdIsMaskedBeforeLlm() {
+        AskResponse response = service.ask(new AskRequest(
+                "Minu isikukood on 39001010123 ja kuidas saan GitLabi?", null));
+        assertFalse(response.refused());
+        assertEquals(1, callCount.get());
+        assertTrue(lastUserText.get() != null);
+        assertFalse(lastUserText.get().contains("39001010123"));
+        assertTrue(lastUserText.get().contains("[REDACTED]"));
+    }
 }

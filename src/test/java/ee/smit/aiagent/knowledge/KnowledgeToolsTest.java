@@ -109,4 +109,49 @@ class KnowledgeToolsTest {
 
         assertEquals(Set.of("list_topics", "search_knowledge", "get_document"), toolNames);
     }
+
+    @Test
+    void getDocumentBlocksSecretContentWithoutRegisteringSource(@TempDir Path secretDir) throws IOException {
+        Files.writeString(secretDir.resolve("secret-doc.md"),
+                """
+                # Secret doc
+
+                password=FAKE_KB_SECRET_782
+                """, StandardCharsets.UTF_8);
+
+        Path clean = secretDir.resolve("clean-kb");
+        Files.createDirectories(clean);
+        Files.writeString(clean.resolve("ok.md"), "# OK\n\nSafe text.\n", StandardCharsets.UTF_8);
+        KnowledgeBase kb = new KnowledgeBase(clean.toString(), 3);
+        kb.loadDocuments();
+        Files.writeString(clean.resolve("leaky.md"),
+                "# Leaky\n\npassword=FAKE_KB_SECRET_782\n", StandardCharsets.UTF_8);
+
+        ToolSourcesBuffer buffer = new ToolSourcesBuffer();
+        KnowledgeTools localTools = new KnowledgeTools(kb, buffer);
+
+        Map<String, String> result = localTools.get_document("leaky.md");
+        assertTrue(result.containsKey("error"));
+        assertFalse(result.getOrDefault("error", "").contains("FAKE_KB_SECRET_782"));
+        assertFalse(result.containsKey("content"));
+        assertTrue(buffer.snapshot().isEmpty());
+    }
+
+    @Test
+    void searchOmitsSecretDocumentsFromPreview(@TempDir Path secretDir) throws IOException {
+        Path dir = secretDir.resolve("kb");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("safe.md"), "# Safe\n\nPipeline info.\n", StandardCharsets.UTF_8);
+        Files.writeString(dir.resolve("bad.md"),
+                "# Bad\n\npassword=FAKE_KB_SECRET_782 and pipeline.\n", StandardCharsets.UTF_8);
+        KnowledgeBase kb = new KnowledgeBase(dir.toString(), 5);
+        kb.loadDocuments();
+        assertEquals(1, kb.getDocuments().size());
+
+        KnowledgeTools localTools = new KnowledgeTools(kb, new ToolSourcesBuffer());
+        List<Map<String, String>> hits = localTools.search_knowledge("pipeline");
+        assertTrue(hits.stream().noneMatch(h ->
+                String.valueOf(h).contains("FAKE_KB_SECRET_782")));
+        assertTrue(hits.stream().noneMatch(h -> "bad.md".equals(h.get("file"))));
+    }
 }
