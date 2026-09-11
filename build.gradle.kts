@@ -33,6 +33,10 @@ tasks.test {
     useJUnitPlatform {
         excludeTags("integration")
     }
+    reports {
+        html.required.set(true)
+        junitXml.required.set(true)
+    }
 }
 
 tasks.register<Test>("integrationTest") {
