@@ -7,7 +7,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -122,4 +124,54 @@ class AgentControllerTest {
                 .andExpect(jsonPath("$.refused").value(false))
                 .andExpect(jsonPath("$.refusalReason").doesNotExist());
     }
+
+    @Test
+    void providerErrorDoesNotLeakInternalDetail() throws Exception {
+        when(agentService.ask(any())).thenThrow(new ResponseStatusException(
+                HttpStatus.BAD_GATEWAY,
+                "AI provider request failed: AUDIT_PROVIDER_INTERNAL_DETAIL_782"));
+
+        mockMvc.perform(post("/api/v1/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"Milline on GitLabi ligipääs?\"}"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.status").value(502))
+                .andExpect(jsonPath("$.error").value("Bad Gateway"))
+                .andExpect(jsonPath("$.message").value("AI provider request failed"))
+                .andExpect(jsonPath("$.correlationId").isString())
+                .andExpect(result -> {
+                    String body = result.getResponse().getContentAsString();
+                    org.junit.jupiter.api.Assertions.assertFalse(
+                            body.contains("AUDIT_PROVIDER_INTERNAL_DETAIL_782"),
+                            "response must not leak provider detail: " + body);
+                });
+    }
+
+    @Test
+    void providerErrorMessageIsStableGeneric() throws Exception {
+        when(agentService.ask(any())).thenThrow(new ResponseStatusException(
+                HttpStatus.BAD_GATEWAY,
+                "AI provider request failed"));
+
+        mockMvc.perform(post("/api/v1/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"Milline on GitLabi ligipääs?\"}"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.message").value("AI provider request failed"))
+                .andExpect(jsonPath("$.correlationId").isNotEmpty());
+    }
+
+    @Test
+    void emptyQuestionKeepsSpecificValidationMessage() throws Exception {
+        mockMvc.perform(post("/api/v1/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("question must not be blank"))
+                .andExpect(jsonPath("$.correlationId").doesNotExist());
+
+        verify(agentService, never()).ask(any());
+    }
+
 }

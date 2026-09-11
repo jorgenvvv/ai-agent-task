@@ -95,7 +95,7 @@ public class KnowledgeTools {
 
             return results;
         } catch (Exception e) {
-            log.warn("search_knowledge failed: {}", e.getMessage());
+            log.warn("search_knowledge failed: {}", e.toString());
             return List.of(Map.of("error", "Search failed"));
         }
     }
@@ -134,11 +134,23 @@ public class KnowledgeTools {
             result.put("content", safeContent);
             return result;
         } catch (SecurityException | IllegalArgumentException e) {
-            log.warn("get_document rejected '{}': {}", file, e.getMessage());
+            log.warn("get_document rejected '{}': {}", safeLogSnippet(file), e.toString());
             return Map.of("error", e.getMessage());
         } catch (Exception e) {
-            log.warn("get_document failed for '{}': {}", file, e.getMessage());
+            log.warn("get_document failed for '{}': {}", safeLogSnippet(file), e.toString());
             return Map.of("error", "Failed to read document");
         }
+    }
+
+    private static String safeLogSnippet(String value) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String trimmed = value.strip().replaceAll("\s+", " ");
+        int max = 40;
+        if (trimmed.length() <= max) {
+            return trimmed;
+        }
+        return trimmed.substring(0, max) + "…(len=" + trimmed.length() + ")";
     }
 }

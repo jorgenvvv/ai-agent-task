@@ -12,6 +12,7 @@ import ee.smit.aiagent.security.SensitiveDataRedactor;
 import ee.smit.aiagent.security.SessionIdHasher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -27,6 +28,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -47,6 +49,7 @@ public class AgentService {
     private static final String DEFAULT_REFUSAL_ANSWER =
             "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
     private static final String UNIVERSAL_REFUSAL_REASON = "Keeldutud turvapoliitika alusel";
+    static final String PROVIDER_FAILURE_MESSAGE = "AI provider request failed";
 
     private static final Pattern FUNCTION_CATALOG_PATTERN = Pattern.compile(
             "\\\"functions\\\"\\s*:\\s*\\[|\\\"name\\\"\\s*:\\s*\\\"(list_topics|search_knowledge|get_document)\\\"",
@@ -128,17 +131,11 @@ public class AgentService {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            log.error("OpenAI / ChatClient call failed: {}", e.getMessage(), e);
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY,
-                    "AI provider request failed: " + rootMessage(e),
-                    e);
+            throw providerFailed(e);
         }
 
         if (llmResponse == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY,
-                    "AI provider returned an empty response");
+            throw providerFailed(null);
         }
 
         List<SourceDto> sources = sourcesBuffer.snapshot();
@@ -168,6 +165,23 @@ public class AgentService {
                     "sessionId must match [a-zA-Z0-9_-]{1,100}");
         }
         return trimmed;
+    }
+
+
+    private ResponseStatusException providerFailed(Throwable cause) {
+        String correlationId = UUID.randomUUID().toString();
+        MDC.put("correlationId", correlationId);
+        if (cause != null) {
+            log.error("AI provider request failed correlationId={} detail={}",
+                    correlationId, rootMessage(cause), cause);
+        } else {
+            log.error("AI provider request failed correlationId={} detail=empty_response",
+                    correlationId);
+        }
+        return new ResponseStatusException(
+                HttpStatus.BAD_GATEWAY,
+                PROVIDER_FAILURE_MESSAGE,
+                cause);
     }
 
     private void ensureApiKeyConfigured() {
