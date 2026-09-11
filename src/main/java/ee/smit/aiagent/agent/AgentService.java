@@ -46,12 +46,14 @@ public class AgentService {
 
     private static final String DEFAULT_REFUSAL_ANSWER =
             "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
-    private static final String REFUSAL_REASON_GUARD = "Kahtlane või lubamatu sisend";
-    private static final String REFUSAL_REASON_SENSITIVE = "Päring sisaldab tundlikke andmeid";
-    private static final String REFUSAL_REASON_UNGROUNDED =
-            "Vastus ei ole teadmusbaasi allikatega kooskõlas";
-    private static final String UNGROUNDED_ANSWER =
-            "Kahjuks ei saa esitatud vastust teadmusbaasi allikatega kinnitada.";
+    private static final String UNIVERSAL_REFUSAL_REASON = "Keeldutud turvapoliitika alusel";
+
+    private static final Pattern FUNCTION_CATALOG_PATTERN = Pattern.compile(
+            "\\\"functions\\\"\\s*:\\s*\\[|\\\"name\\\"\\s*:\\s*\\\"(list_topics|search_knowledge|get_document)\\\"",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOOL_NAME_LEAK_PATTERN = Pattern.compile(
+            "\\b(list_topics|search_knowledge|get_document)\\b",
+            Pattern.CASE_INSENSITIVE);
 
     private static final Set<String> STOP_WORDS = Set.of(
             "a", "an", "and", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "or",
@@ -149,10 +151,7 @@ public class AgentService {
     }
 
     static AskResponse refusedResponse(GuardReasonCode reasonCode) {
-        String reason = reasonCode == GuardReasonCode.SENSITIVE_DATA
-                ? REFUSAL_REASON_SENSITIVE
-                : REFUSAL_REASON_GUARD;
-        return new AskResponse(DEFAULT_REFUSAL_ANSWER, List.of(), "low", true, reason);
+        return sanitizedRefusal();
     }
 
     String resolveSessionKey(String sessionId) {
@@ -183,42 +182,54 @@ public class AgentService {
         List<SourceDto> sources = sanitizeSources(toolSources);
         boolean refused = llm.refused();
         String answer = llm.answer() != null ? llm.answer() : "";
-        String refusalReason = llm.refusalReason();
         String confidence = normalizeConfidence(llm.confidence(), refused);
 
         if (!refused && sources.isEmpty()) {
             refused = true;
-            confidence = "low";
-            sources = List.of();
-            if (!StringUtils.hasText(refusalReason)) {
-                refusalReason = "Teadmusbaasist ei leitud allikaid";
-            }
-            if (!StringUtils.hasText(answer)) {
-                answer = "Kahjuks ei leitud teadmusbaasist selle küsimuse jaoks allikaid.";
-            }
         }
 
         if (!refused) {
             answer = sanitizeCitations(answer, sources);
-            if (!isAnswerGrounded(answer, sources)) {
+            if (!isAnswerGrounded(answer, sources) || containsUnsafeOutput(answer)) {
                 refused = true;
-                confidence = "low";
-                sources = List.of();
-                refusalReason = REFUSAL_REASON_UNGROUNDED;
-                answer = UNGROUNDED_ANSWER;
             }
         }
 
         if (refused) {
-            confidence = "low";
-        } else {
-            if (!StringUtils.hasText(confidence)) {
-                confidence = "high";
-            }
-            answer = ensureSourceCitation(answer, sources);
+            return sanitizedRefusal();
         }
 
-        return new AskResponse(answer, sources, confidence, refused, refusalReason);
+        if (!StringUtils.hasText(confidence)) {
+            confidence = "high";
+        }
+        answer = ensureSourceCitation(answer, sources);
+        return new AskResponse(answer, sources, confidence, false, null);
+    }
+
+    static AskResponse sanitizedRefusal() {
+        return new AskResponse(DEFAULT_REFUSAL_ANSWER, List.of(), "low", true, UNIVERSAL_REFUSAL_REASON);
+    }
+
+    static boolean containsUnsafeOutput(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return false;
+        }
+        String lower = answer.toLowerCase(Locale.ROOT);
+        if (lower.contains("<tool_result") || lower.contains("audit_marker")) {
+            return true;
+        }
+        if (FUNCTION_CATALOG_PATTERN.matcher(answer).find()) {
+            return true;
+        }
+        if (TOOL_NAME_LEAK_PATTERN.matcher(answer).find()
+                && (lower.contains("\"parameters\"")
+                || lower.contains("\"arguments\"")
+                || lower.contains("\"functions\"")
+                || lower.contains("@tool")
+                || lower.contains("toolparam"))) {
+            return true;
+        }
+        return false;
     }
 
     private static List<SourceDto> sanitizeSources(List<SourceDto> toolSources) {
