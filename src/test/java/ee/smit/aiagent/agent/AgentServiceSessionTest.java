@@ -54,9 +54,9 @@ class AgentServiceSessionTest {
             sourcesBuffer.add(new SourceDto(
                     "gitlab-access.md",
                     "GitLab",
-                    "SLA 1-2 toopaev a"));
+                    "Taotle ligipääsu teenuste portaalis. SLA 1-2 tööpäeva."));
             String json = """
-                    {"answer":"Vastus turn %d","refused":false,"refusalReason":null,"confidence":"high"}
+                    {"answer":"Taotle ligipääsu teenuste portaalis. Turn %d.","refused":false,"refusalReason":null,"confidence":"high"}
                     """.formatted(callCount.get());
             return ChatResponse.builder()
                     .generations(List.of(new Generation(new AssistantMessage(json))))

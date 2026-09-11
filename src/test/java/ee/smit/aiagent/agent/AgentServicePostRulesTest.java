@@ -84,9 +84,9 @@ class AgentServicePostRulesTest {
     @Test
     void doesNotDuplicateCitationWhenAlreadyPresent() {
         List<SourceDto> sources = List.of(
-                new SourceDto("cicd-pipeline.md", "CI/CD", "Pipeline etapid."));
+                new SourceDto("cicd-pipeline.md", "CI/CD", "Pipeline etapid ja heade tavade kohta."));
         AgentLlmResponse withMarker = new AgentLlmResponse(
-                "Pinni versioonid. [allikas: cicd-pipeline.md]",
+                "Pipeline etapid. [allikas: cicd-pipeline.md]",
                 false,
                 null,
                 "high");
@@ -99,6 +99,8 @@ class AgentServicePostRulesTest {
         AskResponse marked = AgentService.applyPostRules(withMarker, sources);
         AskResponse named = AgentService.applyPostRules(withFileName, sources);
 
+        assertFalse(marked.refused());
+        assertFalse(named.refused());
         assertEquals(1, countOccurrences(marked.answer(), "[allikas:"));
         assertEquals("Vt cicd-pipeline.md heade tavade kohta.", named.answer());
     }
@@ -106,13 +108,13 @@ class AgentServicePostRulesTest {
     @Test
     void sourcesMustHaveFileAndNonBlankExcerpt() {
         List<SourceDto> mixed = List.of(
-                new SourceDto("ok.md", "OK", "Sisu excerpt"),
+                new SourceDto("ok.md", "OK", "Sisu excerpt vastuseks"),
                 new SourceDto("blank-excerpt.md", "Blank", "  "),
                 new SourceDto("", "No file", "excerpt"),
                 new SourceDto(null, "Null file", "excerpt"),
                 new SourceDto("no-excerpt.md", "No excerpt", null));
         AgentLlmResponse llm = new AgentLlmResponse(
-                "Vastus olemas.",
+                "Sisu excerpt vastuseks.",
                 false,
                 null,
                 "high");
@@ -138,6 +140,104 @@ class AgentServicePostRulesTest {
         assertTrue(response.refused());
         assertTrue(response.sources().isEmpty());
         assertEquals("low", response.confidence());
+    }
+
+    @Test
+    void unsupportedFactIsNotConfirmedWithHighConfidence() {
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab ligipääs", "Taotle ligipääsu teenuste portaalis."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), "Unsupported fact must not pass as grounded: " + response);
+        assertEquals("low", response.confidence());
+        assertFalse(response.answer().toLowerCase().contains("5 minutiga"));
+        assertFalse(response.answer().contains("[allikas:"));
+        assertTrue(response.sources().isEmpty());
+    }
+
+    @Test
+    void forgedCitationRemovedOrRefused() {
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab ligipääs", "Taotle ligipääsu teenuste portaalis."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. [allikas: audit-olematu.md]",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.answer().contains("audit-olematu.md"), response.answer());
+        if (!response.refused()) {
+            assertTrue(response.answer().contains("[allikas: gitlab-access.md]")
+                            || response.answer().toLowerCase().contains("gitlab-access"),
+                    response.answer());
+            assertEquals("high", response.confidence());
+        } else {
+            assertEquals("low", response.confidence());
+        }
+    }
+
+    @Test
+    void mixedCapitalSentenceDoesNotPassAsFullyGroundedWhenDominant() {
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab ligipääs", "Taotle ligipääsu teenuste portaalis."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Eesti pealinn on Tallinn.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused());
+        assertFalse(response.answer().toLowerCase().contains("tallinn"));
+        assertEquals("low", response.confidence());
+    }
+
+    @Test
+    void legitimateGroundedGitlabAnswerPasses() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis ja esita taotlus juhi kinnitusele.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.refused(), response.toString());
+        assertEquals("high", response.confidence());
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]"));
+        assertEquals("gitlab-access.md", response.sources().getFirst().file());
+    }
+
+    @Test
+    void forgedCitationAloneIsNotGrounded() {
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab ligipääs", "Taotle ligipääsu teenuste portaalis."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Vastus. [allikas: audit-olematu.md]",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.answer().contains("audit-olematu.md"));
+        assertTrue(response.refused());
+        assertEquals("low", response.confidence());
+        assertTrue(response.sources().isEmpty());
     }
 
     private static int countOccurrences(String text, String needle) {

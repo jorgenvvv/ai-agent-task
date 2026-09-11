@@ -66,9 +66,9 @@ class AgentServiceGuardrailTest {
             sourcesBuffer.add(new SourceDto(
                     "gitlab-access.md",
                     "GitLab",
-                    "Taotle ligipääsu"));
+                    "Taotle ligipääsu teenuste portaalis."));
             String json = """
-                    {"answer":"OK","refused":false,"refusalReason":null,"confidence":"high"}
+                    {"answer":"Taotle ligipääsu teenuste portaalis.","refused":false,"refusalReason":null,"confidence":"high"}
                     """;
             return ChatResponse.builder()
                     .generations(List.of(new Generation(new AssistantMessage(json))))
