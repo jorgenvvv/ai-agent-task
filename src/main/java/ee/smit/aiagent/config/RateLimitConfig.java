@@ -20,7 +20,7 @@ public class RateLimitConfig {
         RateLimitFilter filter = new RateLimitFilter(rateLimitService, clientIpResolver, objectMapper);
         FilterRegistrationBean<RateLimitFilter> registration = new FilterRegistrationBean<>();
         registration.setFilter(filter);
-        registration.addUrlPatterns("/api/v1/agent/ask");
+        registration.addUrlPatterns("/api/v1/agent/*");
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
         registration.setName("rateLimitFilter");
         return registration;

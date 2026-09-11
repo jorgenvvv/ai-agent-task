@@ -2,6 +2,7 @@ package ee.smit.aiagent.security;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.Clock;
 import java.util.ArrayDeque;
@@ -26,13 +27,11 @@ public class RateLimitService {
         this.clock = clock;
     }
 
-    public boolean tryAcquire(String key) {
+    public boolean tryAcquire(String ip) {
         if (!enabled) {
             return true;
         }
-        if (key == null || key.isBlank()) {
-            key = "unknown";
-        }
+        String key = StringUtils.hasText(ip) ? ip : "unknown";
 
         long now = clock.millis();
         long windowStart = now - 60_000L;

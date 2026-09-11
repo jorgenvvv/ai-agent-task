@@ -12,25 +12,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RateLimitServiceTest {
 
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-01-15T12:00:00Z"), ZoneOffset.UTC);
+
     private RateLimitService service;
 
     @BeforeEach
     void setUp() {
-        Clock clock = Clock.fixed(Instant.parse("2026-01-15T12:00:00Z"), ZoneOffset.UTC);
-        service = new RateLimitService(true, 10, clock);
+        service = new RateLimitService(true, 10, CLOCK);
     }
 
     @Test
-    void eleventhRequestSameKeyIsRejected() {
-        String key = "127.0.0.1|test-unique";
+    void eleventhRequestSameIpIsRejected() {
+        String ip = "127.0.0.1";
         for (int i = 0; i < 10; i++) {
-            assertTrue(service.tryAcquire(key), "request " + (i + 1) + " should pass");
+            assertTrue(service.tryAcquire(ip), "request " + (i + 1) + " should pass");
         }
-        assertFalse(service.tryAcquire(key), "11th request must be rate-limited");
+        assertFalse(service.tryAcquire(ip), "11th request must be rate-limited");
     }
 
     @Test
-    void differentKeysAreIndependent() {
+    void differentIpsAreIndependent() {
         for (int i = 0; i < 10; i++) {
             assertTrue(service.tryAcquire("ip-a"));
         }
@@ -40,10 +41,17 @@ class RateLimitServiceTest {
 
     @Test
     void disabledAlwaysAllows() {
-        Clock clock = Clock.fixed(Instant.parse("2026-01-15T12:00:00Z"), ZoneOffset.UTC);
-        RateLimitService disabled = new RateLimitService(false, 1, clock);
+        RateLimitService disabled = new RateLimitService(false, 1, CLOCK);
         for (int i = 0; i < 20; i++) {
             assertTrue(disabled.tryAcquire("same"));
         }
+    }
+
+    @Test
+    void blankIpUsesUnknownBucket() {
+        for (int i = 0; i < 10; i++) {
+            assertTrue(service.tryAcquire(" "));
+        }
+        assertFalse(service.tryAcquire(null));
     }
 }

@@ -21,6 +21,9 @@ import java.time.ZoneOffset;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atMost;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -29,6 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ExtendWith(MockitoExtension.class)
 class RateLimitFilterTest {
 
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-01-15T12:00:00Z"), ZoneOffset.UTC);
+
     @Mock
     private AgentService agentService;
 
@@ -36,8 +41,7 @@ class RateLimitFilterTest {
 
     @BeforeEach
     void setUp() {
-        Clock clock = Clock.fixed(Instant.parse("2026-01-15T12:00:00Z"), ZoneOffset.UTC);
-        RateLimitService rateLimitService = new RateLimitService(true, 10, clock);
+        RateLimitService rateLimitService = new RateLimitService(true, 10, CLOCK);
         ClientIpResolver ipResolver = new ClientIpResolver(false);
         RateLimitFilter filter = new RateLimitFilter(rateLimitService, ipResolver, new ObjectMapper());
 
@@ -74,5 +78,95 @@ class RateLimitFilterTest {
                 .andExpect(status().isTooManyRequests())
                 .andExpect(jsonPath("$.status").value(429))
                 .andExpect(jsonPath("$.error").value("Too Many Requests"));
+    }
+
+    @Test
+    void ipLimitAcrossSessions() throws Exception {
+        when(agentService.ask(any())).thenReturn(
+                new AskResponse("ok", List.of(), "high", false, null));
+
+        String ip = "203.0.113.77";
+        for (int i = 0; i < 10; i++) {
+            String body = "{\"question\":\"Kuidas GitLab?\",\"sessionId\":\"sess-" + i + "\"}";
+            mockMvc.perform(post("/api/v1/agent/ask")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body)
+                            .with(req -> {
+                                req.setRemoteAddr(ip);
+                                return req;
+                            }))
+                    .andExpect(status().isOk());
+        }
+
+        mockMvc.perform(post("/api/v1/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"Kuidas GitLab?\",\"sessionId\":\"sess-overflow\"}")
+                        .with(req -> {
+                            req.setRemoteAddr(ip);
+                            return req;
+                        }))
+                .andExpect(status().isTooManyRequests());
+
+        verify(agentService, times(10)).ask(any());
+    }
+
+    @Test
+    void semicolonPathIsRateLimited() throws Exception {
+        when(agentService.ask(any())).thenReturn(
+                new AskResponse("ok", List.of(), "high", false, null));
+
+        String body = "{\"question\":\"Kuidas GitLab?\"}";
+        String ip = "203.0.113.88";
+        for (int i = 0; i < 10; i++) {
+            mockMvc.perform(post("/api/v1/agent/ask")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body)
+                            .with(req -> {
+                                req.setRemoteAddr(ip);
+                                return req;
+                            }))
+                    .andExpect(status().isOk());
+        }
+
+        mockMvc.perform(post("/api/v1/agent/ask;audit=1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body)
+                        .with(req -> {
+                            req.setRemoteAddr(ip);
+                            req.setRequestURI("/api/v1/agent/ask;audit=1");
+                            return req;
+                        }))
+                .andExpect(status().isTooManyRequests());
+
+        verify(agentService, atMost(10)).ask(any());
+    }
+
+    @Test
+    void encodedPathIsRateLimited() throws Exception {
+        when(agentService.ask(any())).thenReturn(
+                new AskResponse("ok", List.of(), "high", false, null));
+
+        String body = "{\"question\":\"Kuidas GitLab?\"}";
+        String ip = "203.0.113.89";
+        for (int i = 0; i < 10; i++) {
+            mockMvc.perform(post("/api/v1/agent/ask")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body)
+                            .with(req -> {
+                                req.setRemoteAddr(ip);
+                                return req;
+                            }))
+                    .andExpect(status().isOk());
+        }
+
+        mockMvc.perform(post("/api/v1/agent/%61sk")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body)
+                        .with(req -> {
+                            req.setRemoteAddr(ip);
+                            req.setRequestURI("/api/v1/agent/%61sk");
+                            return req;
+                        }))
+                .andExpect(status().isTooManyRequests());
     }
 }

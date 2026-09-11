@@ -1,29 +1,22 @@
 package ee.smit.aiagent.security;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ee.smit.aiagent.model.ErrorResponse;
 import jakarta.servlet.FilterChain;
-import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
-import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
-import org.springframework.util.StreamUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 
 public class RateLimitFilter extends OncePerRequestFilter {
 
-    private static final String ASK_PATH = "/api/v1/agent/ask";
+    static final String ASK_PATH = "/api/v1/agent/ask";
 
     private final RateLimitService rateLimitService;
     private final ClientIpResolver clientIpResolver;
@@ -49,54 +42,122 @@ public class RateLimitFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
 
-        CachedBodyHttpServletRequest wrapped = new CachedBodyHttpServletRequest(request);
-        String ip = clientIpResolver.resolve(wrapped);
-        String sessionId = extractSessionId(wrapped.getCachedBody());
-        String key = buildKey(ip, sessionId);
-
-        if (!rateLimitService.tryAcquire(key)) {
+        String ip = clientIpResolver.resolve(request);
+        if (!rateLimitService.tryAcquire(ip)) {
             writeTooManyRequests(response);
             return;
         }
 
-        filterChain.doFilter(wrapped, response);
+        filterChain.doFilter(request, response);
     }
 
-    private static boolean isAskPost(HttpServletRequest request) {
+    static boolean isAskPost(HttpServletRequest request) {
         if (!"POST".equalsIgnoreCase(request.getMethod())) {
             return false;
         }
-        String path = request.getRequestURI();
+        String path = requestPath(request);
         if (path == null) {
             return false;
+        }
+        return ASK_PATH.equals(normalizePath(path));
+    }
+
+    private static String requestPath(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        if (path == null) {
+            String servletPath = request.getServletPath();
+            String pathInfo = request.getPathInfo();
+            if (servletPath == null && pathInfo == null) {
+                return null;
+            }
+            path = (servletPath != null ? servletPath : "") + (pathInfo != null ? pathInfo : "");
         }
         String context = request.getContextPath();
         if (StringUtils.hasText(context) && path.startsWith(context)) {
             path = path.substring(context.length());
         }
-        return ASK_PATH.equals(path);
+        if (path.isEmpty()) {
+            path = "/";
+        }
+        return path;
     }
 
-    private String extractSessionId(byte[] body) {
-        if (body == null || body.length == 0) {
-            return null;
+    static String normalizePath(String rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return rawPath;
         }
-        try {
-            JsonNode root = objectMapper.readTree(body);
-            JsonNode sid = root.get("sessionId");
-            if (sid != null && sid.isTextual() && StringUtils.hasText(sid.asText())) {
-                return sid.asText().trim();
+
+        String path = stripMatrixParams(rawPath);
+        path = decodePath(path);
+        path = collapseDuplicateSlashes(path);
+
+        if (path.isEmpty()) {
+            return "/";
+        }
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+        if (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return path;
+    }
+
+    static String stripMatrixParams(String path) {
+        StringBuilder out = new StringBuilder(path.length());
+        int i = 0;
+        while (i < path.length()) {
+            char c = path.charAt(i);
+            if (c == ';') {
+                while (i < path.length() && path.charAt(i) != '/') {
+                    i++;
+                }
+                continue;
             }
-        } catch (Exception ignored) {
+            out.append(c);
+            i++;
         }
-        return null;
+        return out.toString();
     }
 
-    static String buildKey(String ip, String sessionId) {
-        if (StringUtils.hasText(sessionId)) {
-            return ip + "|s:" + sessionId;
+    static String decodePath(String path) {
+        String current = path;
+        for (int round = 0; round < 3; round++) {
+            if (!current.contains("%")) {
+                break;
+            }
+            try {
+                String decoded = URLDecoder.decode(current, StandardCharsets.UTF_8);
+                if (decoded.equals(current)) {
+                    break;
+                }
+                current = decoded;
+            } catch (IllegalArgumentException ex) {
+                break;
+            }
         }
-        return ip;
+        return current;
+    }
+
+    static String collapseDuplicateSlashes(String path) {
+        if (path.indexOf("//") < 0) {
+            return path;
+        }
+        StringBuilder out = new StringBuilder(path.length());
+        boolean prevSlash = false;
+        for (int i = 0; i < path.length(); i++) {
+            char c = path.charAt(i);
+            if (c == '/') {
+                if (prevSlash) {
+                    continue;
+                }
+                prevSlash = true;
+            } else {
+                prevSlash = false;
+            }
+            out.append(c);
+        }
+        return out.toString();
     }
 
     private void writeTooManyRequests(HttpServletResponse response) throws IOException {
@@ -108,49 +169,5 @@ public class RateLimitFilter extends OncePerRequestFilter {
                 "Too Many Requests",
                 "Rate limit exceeded. Try again later.");
         objectMapper.writeValue(response.getOutputStream(), body);
-    }
-
-    static final class CachedBodyHttpServletRequest extends HttpServletRequestWrapper {
-
-        private final byte[] cachedBody;
-
-        CachedBodyHttpServletRequest(HttpServletRequest request) throws IOException {
-            super(request);
-            this.cachedBody = StreamUtils.copyToByteArray(request.getInputStream());
-        }
-
-        byte[] getCachedBody() {
-            return cachedBody;
-        }
-
-        @Override
-        public ServletInputStream getInputStream() {
-            ByteArrayInputStream inputStream = new ByteArrayInputStream(cachedBody);
-            return new ServletInputStream() {
-                @Override
-                public boolean isFinished() {
-                    return inputStream.available() == 0;
-                }
-
-                @Override
-                public boolean isReady() {
-                    return true;
-                }
-
-                @Override
-                public void setReadListener(ReadListener readListener) {
-                }
-
-                @Override
-                public int read() {
-                    return inputStream.read();
-                }
-            };
-        }
-
-        @Override
-        public BufferedReader getReader() {
-            return new BufferedReader(new InputStreamReader(getInputStream(), StandardCharsets.UTF_8));
-        }
     }
 }
