@@ -68,7 +68,6 @@ class AgentServiceSessionTest {
                 chatClient,
                 chatMemory,
                 sourcesBuffer,
-                null,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -139,7 +138,6 @@ class AgentServiceSessionTest {
                         .build()).build(),
                 chatMemory,
                 sourcesBuffer,
-                null,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -161,11 +159,7 @@ class AgentServiceSessionTest {
     }
 
     @Test
-    void emptySourcesUsesKnowledgeFallbackWhenModelSkipsTools() {
-        ee.smit.aiagent.knowledge.KnowledgeBase kb =
-                new ee.smit.aiagent.knowledge.KnowledgeBase("knowledge", 3);
-        kb.loadDocuments();
-
+    void emptySourcesRefusesOnStatelessTurnWhenModelSkipsTools() {
         AtomicInteger localCalls = new AtomicInteger();
         ChatModel modelWithoutTools = prompt -> {
             localCalls.incrementAndGet();
@@ -177,20 +171,49 @@ class AgentServiceSessionTest {
                     .build();
         };
 
-        AgentService withKb = new AgentService(
+        AgentService withoutToolSources = new AgentService(
                 ChatClient.builder(modelWithoutTools).build(),
                 chatMemory,
                 new ToolSourcesBuffer(),
-                kb,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
                 true);
 
-        AskResponse response = withKb.ask(new AskRequest("Kuidas saab gitlab ligipääs?", "repeat-1"));
+        AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", null));
+        assertTrue(response.refused(), response.toString());
+        assertTrue(response.sources().isEmpty(), response.toString());
+        assertEquals("low", response.confidence());
+        assertEquals(1, localCalls.get());
+    }
+
+    @Test
+    void emptySourcesAllowedOnSessionTurnWhenModelSkipsTools() {
+        AtomicInteger localCalls = new AtomicInteger();
+        ChatModel modelWithoutTools = prompt -> {
+            localCalls.incrementAndGet();
+            String json = """
+                    {"answer":"Taotle ligipääsu teenuste portaalis.","refused":false,"refusalReason":null,"confidence":"high"}
+                    """;
+            return ChatResponse.builder()
+                    .generations(List.of(new Generation(new AssistantMessage(json))))
+                    .build();
+        };
+
+        AgentService withoutToolSources = new AgentService(
+                ChatClient.builder(modelWithoutTools).build(),
+                chatMemory,
+                new ToolSourcesBuffer(),
+                new InputGuardService(),
+                new SensitiveDataRedactor(),
+                "test-key",
+                true);
+
+        AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", "repeat-1"));
         assertFalse(response.refused(), response.toString());
-        assertFalse(response.sources().isEmpty(), response.toString());
-        assertTrue(response.sources().getFirst().file().toLowerCase().contains("gitlab"), response.toString());
+        assertTrue(response.sources().isEmpty(), response.toString());
+        assertEquals("low", response.confidence());
+        assertTrue(response.answer().contains("Taotle ligipääsu"), response.answer());
         assertEquals(1, localCalls.get());
     }
 }

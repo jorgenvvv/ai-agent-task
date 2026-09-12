@@ -253,4 +253,20 @@ class AgentServicePostRulesTest {
         }
         return count;
     }
+
+    @Test
+    void sessionTurnEmptySourcesKeepsAnswerLowConfidence() {
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, List.of(), true);
+
+        assertFalse(response.refused());
+        assertEquals("low", response.confidence());
+        assertTrue(response.sources().isEmpty());
+        assertTrue(response.answer().contains("Taotle ligipääsu"));
+    }
 }

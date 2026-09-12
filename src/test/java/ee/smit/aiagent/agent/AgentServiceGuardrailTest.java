@@ -80,7 +80,6 @@ class AgentServiceGuardrailTest {
                 chatClient,
                 chatMemory,
                 sourcesBuffer,
-                null,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",

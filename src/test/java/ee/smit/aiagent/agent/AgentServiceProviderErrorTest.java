@@ -34,7 +34,6 @@ class AgentServiceProviderErrorTest {
                 ChatClient.builder(failingModel).build(),
                 chatMemory,
                 new ToolSourcesBuffer(),
-                null,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",

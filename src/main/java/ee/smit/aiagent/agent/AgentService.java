@@ -1,8 +1,6 @@
 package ee.smit.aiagent.agent;
 
-import ee.smit.aiagent.knowledge.KnowledgeBase;
 import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
-import ee.smit.aiagent.model.KnowledgeDocument;
 import ee.smit.aiagent.model.AgentLlmResponse;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.model.AskResponse;
@@ -58,7 +56,6 @@ public class AgentService {
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
     private final ToolSourcesBuffer sourcesBuffer;
-    private final KnowledgeBase knowledgeBase;
     private final InputGuardService inputGuardService;
     private final SensitiveDataRedactor sensitiveDataRedactor;
     private final String openAiApiKey;
@@ -68,7 +65,6 @@ public class AgentService {
             ChatClient chatClient,
             ChatMemory chatMemory,
             ToolSourcesBuffer sourcesBuffer,
-            KnowledgeBase knowledgeBase,
             InputGuardService inputGuardService,
             SensitiveDataRedactor sensitiveDataRedactor,
             @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
@@ -76,7 +72,6 @@ public class AgentService {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.sourcesBuffer = sourcesBuffer;
-        this.knowledgeBase = knowledgeBase;
         this.inputGuardService = inputGuardService;
         this.sensitiveDataRedactor = sensitiveDataRedactor;
         this.openAiApiKey = openAiApiKey;
@@ -130,36 +125,7 @@ public class AgentService {
         }
 
         List<SourceDto> sources = sourcesBuffer.snapshot();
-        if (!llmResponse.refused() && sources.isEmpty()) {
-            sources = fallbackSourcesFromKnowledge(userMessage);
-        }
-        return applyPostRules(llmResponse, sources);
-    }
-
-    private List<SourceDto> fallbackSourcesFromKnowledge(String question) {
-        if (knowledgeBase == null || question == null || question.isBlank()) {
-            return List.of();
-        }
-        try {
-            List<KnowledgeDocument> hits = knowledgeBase.search(question);
-            if (hits.isEmpty()) {
-                return List.of();
-            }
-            KnowledgeDocument doc = hits.getFirst();
-            String content = doc.content() == null ? "" : doc.content();
-            if (sensitiveDataRedactor.containsSecret(content)) {
-                return List.of();
-            }
-            String safeContent = sensitiveDataRedactor.maskPii(content);
-            String excerpt = KnowledgeBase.excerpt(safeContent, KnowledgeBase.DEFAULT_EXCERPT_LENGTH);
-            if (excerpt == null || excerpt.isBlank()) {
-                return List.of();
-            }
-            return List.of(new SourceDto(doc.fileName(), doc.title(), excerpt));
-        } catch (Exception e) {
-            log.warn("knowledge_fallback_failed detail={}", e.toString());
-            return List.of();
-        }
+        return applyPostRules(llmResponse, sources, sessionKey != null);
     }
 
     private void logRejected(GuardReasonCode reasonCode, String sessionHash, int length) {
@@ -213,12 +179,16 @@ public class AgentService {
     }
 
     static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources) {
+        return applyPostRules(llm, toolSources, false);
+    }
+
+    static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources, boolean sessionTurn) {
         List<SourceDto> sources = sanitizeSources(toolSources);
         boolean refused = llm.refused();
         String answer = llm.answer() != null ? llm.answer() : "";
         String confidence = normalizeConfidence(llm.confidence(), refused);
 
-        if (!refused && sources.isEmpty()) {
+        if (!refused && sources.isEmpty() && !sessionTurn) {
             refused = true;
         }
 
@@ -231,6 +201,11 @@ public class AgentService {
 
         if (refused) {
             return sanitizedRefusal();
+        }
+
+        if (sources.isEmpty()) {
+            confidence = "low";
+            return new AskResponse(answer, List.of(), confidence, false, null);
         }
 
         if (!StringUtils.hasText(confidence)) {
