@@ -52,6 +52,10 @@ public class AgentService {
     private static final Pattern TOOL_NAME_LEAK_PATTERN = Pattern.compile(
             "\\b(list_topics|search_knowledge|get_document)\\b",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern WORD_SPLIT = Pattern.compile("[^\\p{L}\\p{N}]+");
+    private static final int MIN_GROUND_WORD_LEN = 4;
+    private static final int MIN_GROUND_OVERLAP_PERCENT = 60;
 
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
@@ -196,6 +200,8 @@ public class AgentService {
             answer = sanitizeCitations(answer, sources);
             if (containsUnsafeOutput(answer)) {
                 refused = true;
+            } else if (!sources.isEmpty() && !isGroundedInSources(answer, sources)) {
+                refused = true;
             }
         }
 
@@ -217,6 +223,65 @@ public class AgentService {
 
     static AskResponse sanitizedRefusal() {
         return new AskResponse(DEFAULT_REFUSAL_ANSWER, List.of(), "low", true, UNIVERSAL_REFUSAL_REASON);
+    }
+
+    static boolean isGroundedInSources(String answer, List<SourceDto> sources) {
+        if (!StringUtils.hasText(answer) || sources == null || sources.isEmpty()) {
+            return false;
+        }
+
+        String corpus = sourceCorpus(sources);
+        if (corpus.isEmpty()) {
+            return false;
+        }
+
+        String text = CITATION_PATTERN.matcher(answer).replaceAll(" ");
+        text = text.toLowerCase(Locale.ROOT);
+
+        Matcher urls = URL_PATTERN.matcher(text);
+        while (urls.find()) {
+            String url = urls.group().toLowerCase(Locale.ROOT);
+            url = url.replaceAll("[),.;!?]+$", "");
+            if (!corpus.contains(url)) {
+                return false;
+            }
+        }
+
+        String[] parts = WORD_SPLIT.split(text);
+        int significant = 0;
+        int matched = 0;
+        for (String part : parts) {
+            if (part == null || part.length() < MIN_GROUND_WORD_LEN) {
+                continue;
+            }
+            significant++;
+            if (corpus.contains(part)) {
+                matched++;
+            }
+        }
+        if (significant == 0) {
+            return false;
+        }
+        return matched * 100 >= significant * MIN_GROUND_OVERLAP_PERCENT;
+    }
+
+    private static String sourceCorpus(List<SourceDto> sources) {
+        StringBuilder sb = new StringBuilder();
+        for (SourceDto source : sources) {
+            if (source == null) {
+                continue;
+            }
+            if (StringUtils.hasText(source.file())) {
+                sb.append(' ').append(source.file());
+            }
+            if (StringUtils.hasText(source.title())) {
+                sb.append(' ').append(source.title());
+            }
+            if (StringUtils.hasText(source.excerpt())) {
+                sb.append(' ').append(source.excerpt());
+            }
+        }
+        return sb.toString().toLowerCase(Locale.ROOT);
     }
 
     static boolean containsUnsafeOutput(String answer) {
