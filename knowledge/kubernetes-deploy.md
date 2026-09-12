@@ -1,6 +1,6 @@
 # Kubernetes deploy protsess
 
-Ülevaade, kuidas SMIT sisemised teenused viiakse Kubernetes klastrisse. Protsess on standardiseeritud, et vähendada käsitsi vigu ja tagada jälgitavus.
+Ülevaade, kuidas organisatsiooni sisemised teenused viiakse Kubernetes klastrisse. Protsess on standardiseeritud, et vähendada käsitsi vigu ja tagada jälgitavus.
 
 ## Eeldused
 

@@ -1,14 +1,14 @@
 # GitLab ligipääs
 
-Juhend SMIT sisemise GitLabi ligipääsu taotlemiseks. See dokument kirjeldab protsessi uutele töötajatele ja rollimuudatusteks.
+Juhend organisatsiooni sisemise GitLabi ligipääsu taotlemiseks. See dokument kirjeldab protsessi uutele töötajatele ja rollimuudatusteks.
 
 ## Kes saab taotleda
 
-Ligipääsu saavad taotleda kõik SMIT töötajad ja lepingulised partnerid, kellel on kehtiv töösuhe ning kelle tööülesanded nõuavad koodihoidlate kasutamist.
+Ligipääsu saavad taotleda kõik organisatsiooni töötajad ja lepingulised partnerid, kellel on kehtiv töösuhe ning kelle tööülesanded nõuavad koodihoidlate kasutamist.
 
 ## Taotlemise sammud
 
-1. Logi sisse SMIT teenuste portaali (SSO kaudu).
+1. Logi sisse organisatsiooni teenuste portaali (SSO kaudu).
 2. Vali menüüst **Ligipääsutaotlus** → **GitLab**.
 3. Täida taotlusvorm:
    - põhjendus (projekt või tiim);
