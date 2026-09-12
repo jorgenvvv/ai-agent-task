@@ -21,10 +21,17 @@ public class ToolSourcesBuffer {
             return;
         }
         sourcesByFile.merge(source.file(), source, (existing, incoming) -> {
-            boolean incomingHasExcerpt = incoming.excerpt() != null && !incoming.excerpt().isBlank();
-            boolean existingHasExcerpt = existing.excerpt() != null && !existing.excerpt().isBlank();
-            if (incomingHasExcerpt && !existingHasExcerpt) {
+            int incomingLen = excerptLength(incoming);
+            int existingLen = excerptLength(existing);
+            if (incomingLen > existingLen) {
                 return incoming;
+            }
+            if (incomingLen == existingLen && incomingLen > 0) {
+                String incomingTitle = incoming.title() != null ? incoming.title() : "";
+                String existingTitle = existing.title() != null ? existing.title() : "";
+                if (incomingTitle.length() > existingTitle.length()) {
+                    return incoming;
+                }
             }
             return existing;
         });
@@ -45,5 +52,13 @@ public class ToolSourcesBuffer {
 
     public void clear() {
         sourcesByFile.clear();
+    }
+
+    private static int excerptLength(SourceDto source) {
+        if (source == null || source.excerpt() == null) {
+            return 0;
+        }
+        String excerpt = source.excerpt().strip();
+        return excerpt.isEmpty() ? 0 : excerpt.length();
     }
 }

@@ -332,4 +332,20 @@ class KnowledgeBaseTest {
         assertTrue(empty.listTopics().isEmpty());
         assertTrue(empty.search("gitlab").isEmpty());
     }
+
+    @Test
+    void skipsDocumentsWithSecretPatternsOnLoad(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("good.md"),
+                "# Good\n\nNo secrets here.\n", StandardCharsets.UTF_8);
+        Files.writeString(dir.resolve("bad-secret.md"),
+                "# Bad\n\npassword=FAKE_KB_SECRET_782\n", StandardCharsets.UTF_8);
+
+        KnowledgeBase kb = new KnowledgeBase(dir.toString(), 3);
+        kb.loadDocuments();
+
+        List<KnowledgeDocument> docs = kb.getDocuments();
+        assertEquals(1, docs.size());
+        assertEquals("good.md", docs.getFirst().fileName());
+        assertTrue(kb.getDocument("bad-secret.md").isEmpty());
+    }
 }

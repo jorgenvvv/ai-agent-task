@@ -54,9 +54,9 @@ class AgentServiceSessionTest {
             sourcesBuffer.add(new SourceDto(
                     "gitlab-access.md",
                     "GitLab",
-                    "SLA 1-2 toopaev a"));
+                    "Taotle ligipääsu teenuste portaalis. SLA 1-2 tööpäeva."));
             String json = """
-                    {"answer":"Vastus turn %d","refused":false,"refusalReason":null,"confidence":"high"}
+                    {"answer":"Taotle ligipääsu teenuste portaalis. Turn %d.","refused":false,"refusalReason":null,"confidence":"high"}
                     """.formatted(callCount.get());
             return ChatResponse.builder()
                     .generations(List.of(new Generation(new AssistantMessage(json))))
@@ -156,5 +156,64 @@ class AgentServiceSessionTest {
         assertEquals(1, second.sources().size());
         assertEquals("gitlab-access.md", second.sources().getFirst().file());
         assertTrue(second.sources().stream().noneMatch(s -> "stale.md".equals(s.file())));
+    }
+
+    @Test
+    void emptySourcesRefusesOnStatelessTurnWhenModelSkipsTools() {
+        AtomicInteger localCalls = new AtomicInteger();
+        ChatModel modelWithoutTools = prompt -> {
+            localCalls.incrementAndGet();
+            String json = """
+                    {"answer":"Taotle ligipääsu teenuste portaalis.","refused":false,"refusalReason":null,"confidence":"high"}
+                    """;
+            return ChatResponse.builder()
+                    .generations(List.of(new Generation(new AssistantMessage(json))))
+                    .build();
+        };
+
+        AgentService withoutToolSources = new AgentService(
+                ChatClient.builder(modelWithoutTools).build(),
+                chatMemory,
+                new ToolSourcesBuffer(),
+                new InputGuardService(),
+                new SensitiveDataRedactor(),
+                "test-key",
+                true);
+
+        AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", null));
+        assertTrue(response.refused(), response.toString());
+        assertTrue(response.sources().isEmpty(), response.toString());
+        assertEquals("low", response.confidence());
+        assertEquals(1, localCalls.get());
+    }
+
+    @Test
+    void emptySourcesAllowedOnSessionTurnWhenModelSkipsTools() {
+        AtomicInteger localCalls = new AtomicInteger();
+        ChatModel modelWithoutTools = prompt -> {
+            localCalls.incrementAndGet();
+            String json = """
+                    {"answer":"Taotle ligipääsu teenuste portaalis.","refused":false,"refusalReason":null,"confidence":"high"}
+                    """;
+            return ChatResponse.builder()
+                    .generations(List.of(new Generation(new AssistantMessage(json))))
+                    .build();
+        };
+
+        AgentService withoutToolSources = new AgentService(
+                ChatClient.builder(modelWithoutTools).build(),
+                chatMemory,
+                new ToolSourcesBuffer(),
+                new InputGuardService(),
+                new SensitiveDataRedactor(),
+                "test-key",
+                true);
+
+        AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", "repeat-1"));
+        assertFalse(response.refused(), response.toString());
+        assertTrue(response.sources().isEmpty(), response.toString());
+        assertEquals("low", response.confidence());
+        assertTrue(response.answer().contains("Taotle ligipääsu"), response.answer());
+        assertEquals(1, localCalls.get());
     }
 }

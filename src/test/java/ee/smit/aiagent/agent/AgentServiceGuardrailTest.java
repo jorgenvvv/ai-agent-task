@@ -66,9 +66,9 @@ class AgentServiceGuardrailTest {
             sourcesBuffer.add(new SourceDto(
                     "gitlab-access.md",
                     "GitLab",
-                    "Taotle ligipääsu"));
+                    "Taotle ligipääsu teenuste portaalis."));
             String json = """
-                    {"answer":"OK","refused":false,"refusalReason":null,"confidence":"high"}
+                    {"answer":"Taotle ligipääsu teenuste portaalis.","refused":false,"refusalReason":null,"confidence":"high"}
                     """;
             return ChatResponse.builder()
                     .generations(List.of(new Generation(new AssistantMessage(json))))
@@ -135,5 +135,24 @@ class AgentServiceGuardrailTest {
         AskResponse response = service.ask(new AskRequest("Kuidas GitLab?", null));
         assertFalse(response.refused());
         assertEquals(1, callCount.get());
+    }
+
+    @Test
+    void estonianPasswordRefusedWithoutCallingLlm() {
+        AskResponse response = service.ask(new AskRequest(
+                "Minu GitLabi parool on TEST-Parool-782!", null));
+        assertTrue(response.refused());
+        assertEquals(0, callCount.get());
+    }
+
+    @Test
+    void personalIdIsMaskedBeforeLlm() {
+        AskResponse response = service.ask(new AskRequest(
+                "Minu isikukood on 39001010123 ja kuidas saan GitLabi?", null));
+        assertFalse(response.refused());
+        assertEquals(1, callCount.get());
+        assertTrue(lastUserText.get() != null);
+        assertFalse(lastUserText.get().contains("39001010123"));
+        assertTrue(lastUserText.get().contains("[REDACTED]"));
     }
 }

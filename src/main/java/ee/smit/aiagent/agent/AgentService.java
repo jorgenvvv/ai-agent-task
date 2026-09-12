@@ -12,6 +12,7 @@ import ee.smit.aiagent.security.SensitiveDataRedactor;
 import ee.smit.aiagent.security.SessionIdHasher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -22,8 +23,12 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
@@ -32,11 +37,21 @@ public class AgentService {
     private static final Logger log = LoggerFactory.getLogger(AgentService.class);
     private static final String SOURCE_CITATION_MARKER = "[allikas:";
     private static final Pattern SESSION_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_-]{1,100}$");
+    private static final Pattern CITATION_PATTERN = Pattern.compile(
+            "\\[\\s*allikas\\s*:\\s*([^\\]]+?)\\s*\\]",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     private static final String DEFAULT_REFUSAL_ANSWER =
             "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
-    private static final String REFUSAL_REASON_GUARD = "Kahtlane või lubamatu sisend";
-    private static final String REFUSAL_REASON_SENSITIVE = "Päring sisaldab tundlikke andmeid";
+    private static final String UNIVERSAL_REFUSAL_REASON = "Keeldutud turvapoliitika alusel";
+    static final String PROVIDER_FAILURE_MESSAGE = "AI provider request failed";
+
+    private static final Pattern FUNCTION_CATALOG_PATTERN = Pattern.compile(
+            "\\\"functions\\\"\\s*:\\s*\\[|\\\"name\\\"\\s*:\\s*\\\"(list_topics|search_knowledge|get_document)\\\"",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOOL_NAME_LEAK_PATTERN = Pattern.compile(
+            "\\b(list_topics|search_knowledge|get_document)\\b",
+            Pattern.CASE_INSENSITIVE);
 
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
@@ -102,21 +117,15 @@ public class AgentService {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            log.error("OpenAI / ChatClient call failed: {}", e.getMessage(), e);
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY,
-                    "AI provider request failed: " + rootMessage(e),
-                    e);
+            throw providerFailed(e);
         }
 
         if (llmResponse == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY,
-                    "AI provider returned an empty response");
+            throw providerFailed(null);
         }
 
         List<SourceDto> sources = sourcesBuffer.snapshot();
-        return applyPostRules(llmResponse, sources);
+        return applyPostRules(llmResponse, sources, sessionKey != null);
     }
 
     private void logRejected(GuardReasonCode reasonCode, String sessionHash, int length) {
@@ -125,10 +134,7 @@ public class AgentService {
     }
 
     static AskResponse refusedResponse(GuardReasonCode reasonCode) {
-        String reason = reasonCode == GuardReasonCode.SENSITIVE_DATA
-                ? REFUSAL_REASON_SENSITIVE
-                : REFUSAL_REASON_GUARD;
-        return new AskResponse(DEFAULT_REFUSAL_ANSWER, List.of(), "low", true, reason);
+        return sanitizedRefusal();
     }
 
     String resolveSessionKey(String sessionId) {
@@ -147,6 +153,23 @@ public class AgentService {
         return trimmed;
     }
 
+
+    private ResponseStatusException providerFailed(Throwable cause) {
+        String correlationId = UUID.randomUUID().toString();
+        MDC.put("correlationId", correlationId);
+        if (cause != null) {
+            log.error("AI provider request failed correlationId={} detail={}",
+                    correlationId, rootMessage(cause), cause);
+        } else {
+            log.error("AI provider request failed correlationId={} detail=empty_response",
+                    correlationId);
+        }
+        return new ResponseStatusException(
+                HttpStatus.BAD_GATEWAY,
+                PROVIDER_FAILURE_MESSAGE,
+                cause);
+    }
+
     private void ensureApiKeyConfigured() {
         if (!StringUtils.hasText(openAiApiKey)) {
             throw new ResponseStatusException(
@@ -156,34 +179,66 @@ public class AgentService {
     }
 
     static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources) {
+        return applyPostRules(llm, toolSources, false);
+    }
+
+    static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources, boolean sessionTurn) {
         List<SourceDto> sources = sanitizeSources(toolSources);
         boolean refused = llm.refused();
         String answer = llm.answer() != null ? llm.answer() : "";
-        String refusalReason = llm.refusalReason();
         String confidence = normalizeConfidence(llm.confidence(), refused);
 
-        if (!refused && sources.isEmpty()) {
+        if (!refused && sources.isEmpty() && !sessionTurn) {
             refused = true;
-            confidence = "low";
-            sources = List.of();
-            if (!StringUtils.hasText(refusalReason)) {
-                refusalReason = "Teadmusbaasist ei leitud allikaid";
-            }
-            if (!StringUtils.hasText(answer)) {
-                answer = "Kahjuks ei leitud teadmusbaasist selle küsimuse jaoks allikaid.";
+        }
+
+        if (!refused) {
+            answer = sanitizeCitations(answer, sources);
+            if (containsUnsafeOutput(answer)) {
+                refused = true;
             }
         }
 
         if (refused) {
-            confidence = "low";
-        } else {
-            if (!StringUtils.hasText(confidence)) {
-                confidence = "high";
-            }
-            answer = ensureSourceCitation(answer, sources);
+            return sanitizedRefusal();
         }
 
-        return new AskResponse(answer, sources, confidence, refused, refusalReason);
+        if (sources.isEmpty()) {
+            confidence = "low";
+            return new AskResponse(answer, List.of(), confidence, false, null);
+        }
+
+        if (!StringUtils.hasText(confidence)) {
+            confidence = "high";
+        }
+        answer = ensureSourceCitation(answer, sources);
+        return new AskResponse(answer, sources, confidence, false, null);
+    }
+
+    static AskResponse sanitizedRefusal() {
+        return new AskResponse(DEFAULT_REFUSAL_ANSWER, List.of(), "low", true, UNIVERSAL_REFUSAL_REASON);
+    }
+
+    static boolean containsUnsafeOutput(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return false;
+        }
+        String lower = answer.toLowerCase(Locale.ROOT);
+        if (lower.contains("<tool_result") || lower.contains("audit_marker")) {
+            return true;
+        }
+        if (FUNCTION_CATALOG_PATTERN.matcher(answer).find()) {
+            return true;
+        }
+        if (TOOL_NAME_LEAK_PATTERN.matcher(answer).find()
+                && (lower.contains("\"parameters\"")
+                || lower.contains("\"arguments\"")
+                || lower.contains("\"functions\"")
+                || lower.contains("@tool")
+                || lower.contains("toolparam"))) {
+            return true;
+        }
+        return false;
     }
 
     private static List<SourceDto> sanitizeSources(List<SourceDto> toolSources) {
@@ -206,11 +261,62 @@ public class AgentService {
         return List.copyOf(cleaned);
     }
 
+    static String sanitizeCitations(String answer, List<SourceDto> sources) {
+        if (answer == null || answer.isEmpty()) {
+            return answer == null ? "" : answer;
+        }
+        Set<String> allowed = allowedSourceFiles(sources);
+        Matcher matcher = CITATION_PATTERN.matcher(answer);
+        StringBuffer sb = new StringBuffer();
+        while (matcher.find()) {
+            String cited = matcher.group(1) != null ? matcher.group(1).trim() : "";
+            if (isAllowedCitation(cited, allowed)) {
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group()));
+            } else {
+                matcher.appendReplacement(sb, "");
+            }
+        }
+        matcher.appendTail(sb);
+        return sb.toString().replaceAll(" +", " ").replaceAll(" +([.,;:!?])", "$1").trim();
+    }
+
+    private static Set<String> allowedSourceFiles(List<SourceDto> sources) {
+        Set<String> allowed = new HashSet<>();
+        if (sources == null) {
+            return allowed;
+        }
+        for (SourceDto source : sources) {
+            if (source != null && StringUtils.hasText(source.file())) {
+                allowed.add(source.file().trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        return allowed;
+    }
+
+    private static boolean isAllowedCitation(String citedFile, Set<String> allowed) {
+        if (!StringUtils.hasText(citedFile) || allowed.isEmpty()) {
+            return false;
+        }
+        String normalized = citedFile.trim().toLowerCase(Locale.ROOT);
+        if (allowed.contains(normalized)) {
+            return true;
+        }
+        for (String file : allowed) {
+            if (file.endsWith("/" + normalized) || normalized.endsWith("/" + file)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static String ensureSourceCitation(String answer, List<SourceDto> sources) {
         if (sources.isEmpty()) {
             return answer;
         }
         String text = answer == null ? "" : answer;
+        if (!StringUtils.hasText(text)) {
+            return text;
+        }
         String lower = text.toLowerCase(Locale.ROOT);
         if (lower.contains(SOURCE_CITATION_MARKER)) {
             return text;
@@ -222,9 +328,6 @@ public class AgentService {
         }
         String firstFile = sources.getFirst().file();
         String suffix = " [allikas: " + firstFile + "]";
-        if (!StringUtils.hasText(text)) {
-            return suffix.stripLeading();
-        }
         return text.stripTrailing() + suffix;
     }
 

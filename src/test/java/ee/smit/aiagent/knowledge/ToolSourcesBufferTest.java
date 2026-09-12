@@ -33,4 +33,18 @@ class ToolSourcesBufferTest {
         buffer.clear();
         assertTrue(buffer.snapshot().isEmpty());
     }
+
+    @Test
+    void prefersLongerExcerptOverTitleOnly() {
+        ToolSourcesBuffer buffer = new ToolSourcesBuffer();
+        buffer.add(new SourceDto("gitlab-access.md", "GitLab ligipääs", "GitLab ligipääs"));
+        buffer.add(new SourceDto(
+                "gitlab-access.md",
+                "GitLab ligipääs",
+                "Juhi kinnitus: tavaliselt 1–2 tööpäeva. Administraatori seadistus kuni 1 tööpäev."));
+
+        List<SourceDto> snap = buffer.snapshot();
+        assertEquals(1, snap.size());
+        assertTrue(snap.getFirst().excerpt().contains("1–2 tööpäeva"));
+    }
 }

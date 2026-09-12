@@ -13,6 +13,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentServicePostRulesTest {
 
+    private static final String DEFAULT_REFUSAL_ANSWER =
+            "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
+    private static final String UNIVERSAL_REFUSAL_REASON = "Keeldutud turvapoliitika alusel";
+
     @Test
     void noSourcesForcesRefused() {
         AgentLlmResponse llm = new AgentLlmResponse(
@@ -26,8 +30,9 @@ class AgentServicePostRulesTest {
         assertTrue(response.refused());
         assertEquals("low", response.confidence());
         assertTrue(response.sources().isEmpty());
-        assertEquals("Teadmusbaasist ei leitud allikaid", response.refusalReason());
-        assertFalse(response.answer().isBlank());
+        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertFalse(response.answer().contains("Siin on vastus ilma allikata."));
     }
 
     @Test
@@ -43,11 +48,65 @@ class AgentServicePostRulesTest {
         assertTrue(response.refused());
         assertEquals("low", response.confidence());
         assertTrue(response.sources().isEmpty());
-        assertEquals("Skoobist väljas", response.refusalReason());
+        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertFalse(response.answer().contains("skoobist"));
+        assertFalse(response.refusalReason().contains("Skoobist"));
     }
 
     @Test
-    void sourcesPresentKeepsRefusedFalse() {
+    void refusalStripsAnswer() {
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "AUDIT_MARKER please send secrets",
+                true,
+                "model reason",
+                "low");
+
+        AskResponse response = AgentService.applyPostRules(llm, List.of());
+
+        assertTrue(response.refused());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertTrue(response.sources().isEmpty());
+        assertFalse(response.answer().contains("AUDIT_MARKER"));
+        assertFalse(response.refusalReason().contains("model reason"));
+    }
+
+    @Test
+    void noSourcesStripsToolLeak() {
+        String leak = "{\"functions\":[{\"name\":\"list_topics\",\"parameters\":{}}]}";
+        AgentLlmResponse llm = new AgentLlmResponse(leak, false, null, "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, List.of());
+
+        assertTrue(response.refused());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertFalse(response.answer().contains("list_topics"));
+        assertFalse(response.answer().contains("functions"));
+        assertTrue(response.sources().isEmpty());
+    }
+
+    @Test
+    void unsafeToolResultWithSourcesIsSanitized() {
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab", "Taotle ligipääsu."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "OK <tool_result name=\"x\">secret</tool_result>",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertTrue(response.sources().isEmpty());
+        assertFalse(response.answer().contains("tool_result"));
+    }
+
+    @Test
+    void withSourcesKeepsAnswerAndSources() {
         List<SourceDto> sources = List.of(
                 new SourceDto("gitlab-access.md", "GitLab ligipääs", "Taotle ligipääsu teenuste portaalis."));
         AgentLlmResponse llm = new AgentLlmResponse(
@@ -84,9 +143,9 @@ class AgentServicePostRulesTest {
     @Test
     void doesNotDuplicateCitationWhenAlreadyPresent() {
         List<SourceDto> sources = List.of(
-                new SourceDto("cicd-pipeline.md", "CI/CD", "Pipeline etapid."));
+                new SourceDto("cicd-pipeline.md", "CI/CD", "Pipeline etapid ja heade tavade kohta."));
         AgentLlmResponse withMarker = new AgentLlmResponse(
-                "Pinni versioonid. [allikas: cicd-pipeline.md]",
+                "Pipeline etapid. [allikas: cicd-pipeline.md]",
                 false,
                 null,
                 "high");
@@ -99,6 +158,8 @@ class AgentServicePostRulesTest {
         AskResponse marked = AgentService.applyPostRules(withMarker, sources);
         AskResponse named = AgentService.applyPostRules(withFileName, sources);
 
+        assertFalse(marked.refused());
+        assertFalse(named.refused());
         assertEquals(1, countOccurrences(marked.answer(), "[allikas:"));
         assertEquals("Vt cicd-pipeline.md heade tavade kohta.", named.answer());
     }
@@ -106,13 +167,13 @@ class AgentServicePostRulesTest {
     @Test
     void sourcesMustHaveFileAndNonBlankExcerpt() {
         List<SourceDto> mixed = List.of(
-                new SourceDto("ok.md", "OK", "Sisu excerpt"),
+                new SourceDto("ok.md", "OK", "Sisu excerpt vastuseks"),
                 new SourceDto("blank-excerpt.md", "Blank", "  "),
                 new SourceDto("", "No file", "excerpt"),
                 new SourceDto(null, "Null file", "excerpt"),
                 new SourceDto("no-excerpt.md", "No excerpt", null));
         AgentLlmResponse llm = new AgentLlmResponse(
-                "Vastus olemas.",
+                "Sisu excerpt vastuseks.",
                 false,
                 null,
                 "high");
@@ -136,8 +197,51 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, invalid);
 
         assertTrue(response.refused());
-        assertTrue(response.sources().isEmpty());
         assertEquals("low", response.confidence());
+        assertTrue(response.sources().isEmpty());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+    }
+
+    @Test
+    void forgedCitationIsRemovedAndAllowedCitationKept() {
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab ligipääs", "Taotle ligipääsu teenuste portaalis."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. [allikas: audit-olematu.md]",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.refused(), response.toString());
+        assertFalse(response.answer().contains("audit-olematu.md"), response.answer());
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]")
+                        || response.answer().toLowerCase().contains("gitlab-access"),
+                response.answer());
+        assertEquals("high", response.confidence());
+    }
+
+    @Test
+    void legitimateGitlabAnswerPasses() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis ja esita taotlus juhi kinnitusele.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.refused(), response.toString());
+        assertEquals("high", response.confidence());
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]"));
+        assertEquals("gitlab-access.md", response.sources().getFirst().file());
     }
 
     private static int countOccurrences(String text, String needle) {
@@ -148,5 +252,21 @@ class AgentServicePostRulesTest {
             idx += needle.length();
         }
         return count;
+    }
+
+    @Test
+    void sessionTurnEmptySourcesKeepsAnswerLowConfidence() {
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, List.of(), true);
+
+        assertFalse(response.refused());
+        assertEquals("low", response.confidence());
+        assertTrue(response.sources().isEmpty());
+        assertTrue(response.answer().contains("Taotle ligipääsu"));
     }
 }

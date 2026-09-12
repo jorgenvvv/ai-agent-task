@@ -1,9 +1,11 @@
 package ee.smit.aiagent.knowledge;
 
 import ee.smit.aiagent.model.KnowledgeDocument;
+import ee.smit.aiagent.security.SensitiveDataRedactor;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -31,7 +33,7 @@ public class KnowledgeBase {
     private static final double TITLE_BOOST = 3.0;
     private static final double FILE_NAME_BOOST = 2.0;
     private static final double CONTENT_TERM_WEIGHT = 1.0;
-    public static final int DEFAULT_EXCERPT_LENGTH = 500;
+    public static final int DEFAULT_EXCERPT_LENGTH = 2500;
 
     private static final Set<String> STOP_WORDS = Set.of(
             "ja", "ning", "voi", "või", "on", "ei", "mis", "kuidas", "kas", "mul", "saan",
@@ -46,17 +48,25 @@ public class KnowledgeBase {
 
     private final Path baseDir;
     private final int topK;
+    private final SensitiveDataRedactor sensitiveDataRedactor;
     private List<KnowledgeDocument> documents = List.of();
 
+    @Autowired
     public KnowledgeBase(
             @Value("${app.knowledge.path:knowledge}") String knowledgePath,
-            @Value("${app.knowledge.search.top-k:3}") int topK) {
+            @Value("${app.knowledge.search.top-k:3}") int topK,
+            SensitiveDataRedactor sensitiveDataRedactor) {
         this.baseDir = Path.of(knowledgePath).toAbsolutePath().normalize();
         this.topK = Math.max(1, topK);
+        this.sensitiveDataRedactor = sensitiveDataRedactor;
+    }
+
+    public KnowledgeBase(String knowledgePath, int topK) {
+        this(knowledgePath, topK, new SensitiveDataRedactor());
     }
 
     @PostConstruct
-    void loadDocuments() {
+    public void loadDocuments() {
         if (!Files.isDirectory(baseDir)) {
             log.warn("Knowledge base directory does not exist: {}", baseDir);
             documents = List.of();
@@ -69,6 +79,7 @@ public class KnowledgeBase {
                     .filter(path -> path.getFileName().toString().endsWith(".md"))
                     .sorted(Comparator.comparing(this::toRelativeFileName))
                     .map(this::readDocument)
+                    .flatMap(Optional::stream)
                     .toList();
             log.info("Loaded {} knowledge documents from {}", documents.size(), baseDir);
         } catch (IOException e) {
@@ -155,11 +166,16 @@ public class KnowledgeBase {
         return documents;
     }
 
-    private KnowledgeDocument readDocument(Path path) {
+    private Optional<KnowledgeDocument> readDocument(Path path) {
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8);
             String fileName = toRelativeFileName(path);
-            return new KnowledgeDocument(fileName, extractTitle(content, fileName), content);
+            if (sensitiveDataRedactor.containsSecret(content)) {
+                log.warn("Skipping knowledge file with secret-like content: {}", fileName);
+                return Optional.empty();
+            }
+            String safeContent = sensitiveDataRedactor.maskPii(content);
+            return Optional.of(new KnowledgeDocument(fileName, extractTitle(safeContent, fileName), safeContent));
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to read knowledge file: " + path, e);
         }
@@ -169,7 +185,7 @@ public class KnowledgeBase {
         if (!Files.isRegularFile(safePath)) {
             return Optional.empty();
         }
-        return Optional.of(readDocument(safePath));
+        return readDocument(safePath);
     }
 
     private String toRelativeFileName(Path path) {
