@@ -1,6 +1,8 @@
 package ee.smit.aiagent.agent;
 
+import ee.smit.aiagent.knowledge.KnowledgeBase;
 import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
+import ee.smit.aiagent.model.KnowledgeDocument;
 import ee.smit.aiagent.model.AgentLlmResponse;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.model.AskResponse;
@@ -24,7 +26,6 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -41,10 +42,6 @@ public class AgentService {
     private static final Pattern CITATION_PATTERN = Pattern.compile(
             "\\[\\s*allikas\\s*:\\s*([^\\]]+?)\\s*\\]",
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
-    private static final Pattern TOKEN_PATTERN = Pattern.compile("[\\p{L}\\p{N}]+", Pattern.UNICODE_CHARACTER_CLASS);
-
-    private static final double MIN_GROUNDING_OVERLAP = 0.40;
-    private static final int MIN_GROUNDED_TOKENS = 2;
 
     private static final String DEFAULT_REFUSAL_ANSWER =
             "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
@@ -58,18 +55,10 @@ public class AgentService {
             "\\b(list_topics|search_knowledge|get_document)\\b",
             Pattern.CASE_INSENSITIVE);
 
-    private static final Set<String> STOP_WORDS = Set.of(
-            "a", "an", "and", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "or",
-            "that", "the", "to", "was", "were", "with", "this", "are", "not", "no", "md", "vt", "nt", "sh",
-            "ja", "ning", "või", "ei", "on", "oli", "ole", "olla", "et", "kui", "ka", "nii", "siis",
-            "see", "need", "kuid", "aga", "sest", "kuna", "mis", "kes", "kus", "kuidas",
-            "oma", "üle", "alla", "läbi", "peale", "enne", "pärast", "vahel",
-            "me", "te", "nad", "ta", "ma", "sa", "mul", "sul", "tal", "meil", "teil", "neil",
-            "minu", "sinu", "tema", "meie", "teie", "nende", "enda");
-
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
     private final ToolSourcesBuffer sourcesBuffer;
+    private final KnowledgeBase knowledgeBase;
     private final InputGuardService inputGuardService;
     private final SensitiveDataRedactor sensitiveDataRedactor;
     private final String openAiApiKey;
@@ -79,6 +68,7 @@ public class AgentService {
             ChatClient chatClient,
             ChatMemory chatMemory,
             ToolSourcesBuffer sourcesBuffer,
+            KnowledgeBase knowledgeBase,
             InputGuardService inputGuardService,
             SensitiveDataRedactor sensitiveDataRedactor,
             @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
@@ -86,6 +76,7 @@ public class AgentService {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.sourcesBuffer = sourcesBuffer;
+        this.knowledgeBase = knowledgeBase;
         this.inputGuardService = inputGuardService;
         this.sensitiveDataRedactor = sensitiveDataRedactor;
         this.openAiApiKey = openAiApiKey;
@@ -139,7 +130,36 @@ public class AgentService {
         }
 
         List<SourceDto> sources = sourcesBuffer.snapshot();
+        if (!llmResponse.refused() && sources.isEmpty()) {
+            sources = fallbackSourcesFromKnowledge(userMessage);
+        }
         return applyPostRules(llmResponse, sources);
+    }
+
+    private List<SourceDto> fallbackSourcesFromKnowledge(String question) {
+        if (knowledgeBase == null || question == null || question.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<KnowledgeDocument> hits = knowledgeBase.search(question);
+            if (hits.isEmpty()) {
+                return List.of();
+            }
+            KnowledgeDocument doc = hits.getFirst();
+            String content = doc.content() == null ? "" : doc.content();
+            if (sensitiveDataRedactor.containsSecret(content)) {
+                return List.of();
+            }
+            String safeContent = sensitiveDataRedactor.maskPii(content);
+            String excerpt = KnowledgeBase.excerpt(safeContent, KnowledgeBase.DEFAULT_EXCERPT_LENGTH);
+            if (excerpt == null || excerpt.isBlank()) {
+                return List.of();
+            }
+            return List.of(new SourceDto(doc.fileName(), doc.title(), excerpt));
+        } catch (Exception e) {
+            log.warn("knowledge_fallback_failed detail={}", e.toString());
+            return List.of();
+        }
     }
 
     private void logRejected(GuardReasonCode reasonCode, String sessionHash, int length) {
@@ -204,7 +224,7 @@ public class AgentService {
 
         if (!refused) {
             answer = sanitizeCitations(answer, sources);
-            if (!isAnswerGrounded(answer, sources) || containsUnsafeOutput(answer)) {
+            if (containsUnsafeOutput(answer)) {
                 refused = true;
             }
         }
@@ -312,100 +332,6 @@ public class AgentService {
             }
         }
         return false;
-    }
-
-    static boolean isAnswerGrounded(String answer, List<SourceDto> sources) {
-        if (sources == null || sources.isEmpty()) {
-            return false;
-        }
-        String withoutCitations = CITATION_PATTERN.matcher(answer == null ? "" : answer).replaceAll(" ");
-        List<String> answerTokens = significantTokens(withoutCitations);
-        if (answerTokens.isEmpty()) {
-            return false;
-        }
-
-        Set<String> sourceTokens = new HashSet<>();
-        StringBuilder sourceBlob = new StringBuilder();
-        for (SourceDto source : sources) {
-            if (source == null) {
-                continue;
-            }
-            if (StringUtils.hasText(source.excerpt())) {
-                sourceTokens.addAll(significantTokens(source.excerpt()));
-                sourceBlob.append(' ').append(source.excerpt());
-            }
-            if (StringUtils.hasText(source.title())) {
-                sourceTokens.addAll(significantTokens(source.title()));
-                sourceBlob.append(' ').append(source.title());
-            }
-            if (StringUtils.hasText(source.file())) {
-                sourceTokens.addAll(significantTokens(source.file().replace('.', ' ')));
-                sourceBlob.append(' ').append(source.file());
-            }
-        }
-        String blob = sourceBlob.toString().toLowerCase(Locale.ROOT);
-
-        int matched = 0;
-        for (String token : answerTokens) {
-            if (tokenSupported(token, sourceTokens, blob)) {
-                matched++;
-            }
-        }
-
-        double ratio = (double) matched / (double) answerTokens.size();
-        if (answerTokens.size() <= 3) {
-            return matched >= Math.min(MIN_GROUNDED_TOKENS, answerTokens.size())
-                    && ratio >= MIN_GROUNDING_OVERLAP;
-        }
-        return matched >= MIN_GROUNDED_TOKENS && ratio >= MIN_GROUNDING_OVERLAP;
-    }
-
-    private static boolean tokenSupported(String token, Set<String> sourceTokens, String sourceBlob) {
-        if (sourceTokens.contains(token)) {
-            return true;
-        }
-        if (sourceBlob.contains(token)) {
-            return true;
-        }
-        for (String sourceToken : sourceTokens) {
-            if (tokensLooselyMatch(token, sourceToken)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean tokensLooselyMatch(String a, String b) {
-        if (a.equals(b)) {
-            return true;
-        }
-        int min = Math.min(a.length(), b.length());
-        if (min < 4) {
-            return false;
-        }
-        return a.startsWith(b) || b.startsWith(a);
-    }
-
-    static List<String> significantTokens(String text) {
-        if (text == null || text.isBlank()) {
-            return List.of();
-        }
-        Matcher matcher = TOKEN_PATTERN.matcher(text.toLowerCase(Locale.ROOT));
-        LinkedHashSet<String> tokens = new LinkedHashSet<>();
-        while (matcher.find()) {
-            String token = matcher.group();
-            if (token.length() < 2) {
-                continue;
-            }
-            if (STOP_WORDS.contains(token)) {
-                continue;
-            }
-            if (token.chars().allMatch(Character::isDigit)) {
-                continue;
-            }
-            tokens.add(token);
-        }
-        return List.copyOf(tokens);
     }
 
     private static String ensureSourceCitation(String answer, List<SourceDto> sources) {

@@ -33,7 +33,7 @@ public class KnowledgeBase {
     private static final double TITLE_BOOST = 3.0;
     private static final double FILE_NAME_BOOST = 2.0;
     private static final double CONTENT_TERM_WEIGHT = 1.0;
-    public static final int DEFAULT_EXCERPT_LENGTH = 500;
+    public static final int DEFAULT_EXCERPT_LENGTH = 2500;
 
     private static final Set<String> STOP_WORDS = Set.of(
             "ja", "ning", "voi", "või", "on", "ei", "mis", "kuidas", "kas", "mul", "saan",
@@ -66,7 +66,7 @@ public class KnowledgeBase {
     }
 
     @PostConstruct
-    void loadDocuments() {
+    public void loadDocuments() {
         if (!Files.isDirectory(baseDir)) {
             log.warn("Knowledge base directory does not exist: {}", baseDir);
             documents = List.of();

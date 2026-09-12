@@ -68,6 +68,7 @@ class AgentServiceSessionTest {
                 chatClient,
                 chatMemory,
                 sourcesBuffer,
+                null,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -138,6 +139,7 @@ class AgentServiceSessionTest {
                         .build()).build(),
                 chatMemory,
                 sourcesBuffer,
+                null,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -156,5 +158,39 @@ class AgentServiceSessionTest {
         assertEquals(1, second.sources().size());
         assertEquals("gitlab-access.md", second.sources().getFirst().file());
         assertTrue(second.sources().stream().noneMatch(s -> "stale.md".equals(s.file())));
+    }
+
+    @Test
+    void emptySourcesUsesKnowledgeFallbackWhenModelSkipsTools() {
+        ee.smit.aiagent.knowledge.KnowledgeBase kb =
+                new ee.smit.aiagent.knowledge.KnowledgeBase("knowledge", 3);
+        kb.loadDocuments();
+
+        AtomicInteger localCalls = new AtomicInteger();
+        ChatModel modelWithoutTools = prompt -> {
+            localCalls.incrementAndGet();
+            String json = """
+                    {"answer":"Taotle ligipääsu teenuste portaalis.","refused":false,"refusalReason":null,"confidence":"high"}
+                    """;
+            return ChatResponse.builder()
+                    .generations(List.of(new Generation(new AssistantMessage(json))))
+                    .build();
+        };
+
+        AgentService withKb = new AgentService(
+                ChatClient.builder(modelWithoutTools).build(),
+                chatMemory,
+                new ToolSourcesBuffer(),
+                kb,
+                new InputGuardService(),
+                new SensitiveDataRedactor(),
+                "test-key",
+                true);
+
+        AskResponse response = withKb.ask(new AskRequest("Kuidas saab gitlab ligipääs?", "repeat-1"));
+        assertFalse(response.refused(), response.toString());
+        assertFalse(response.sources().isEmpty(), response.toString());
+        assertTrue(response.sources().getFirst().file().toLowerCase().contains("gitlab"), response.toString());
+        assertEquals(1, localCalls.get());
     }
 }
