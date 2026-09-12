@@ -269,4 +269,62 @@ class AgentServicePostRulesTest {
         assertTrue(response.sources().isEmpty());
         assertTrue(response.answer().contains("Taotle ligipääsu"));
     }
+
+    @Test
+    void unsupportedSlaFactRefused() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertFalse(response.answer().contains("5 minut"));
+    }
+
+    @Test
+    void outOfScopeCapitalRefused() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Eesti pealinn on Tallinn.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertFalse(response.answer().toLowerCase().contains("tallinn"));
+    }
+
+    @Test
+    void phishingUrlRefused() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis aadressil https://audit.invalid/verify.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertFalse(response.answer().contains("audit.invalid"));
+    }
 }
