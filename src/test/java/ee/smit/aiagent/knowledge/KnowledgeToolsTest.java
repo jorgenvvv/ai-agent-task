@@ -92,6 +92,55 @@ class KnowledgeToolsTest {
     }
 
     @Test
+    void getDocumentReadsNestedRelativePathAndRegistersSource() throws IOException {
+        Path nestedDir = tempDir.resolve("deploy");
+        Files.createDirectories(nestedDir);
+        Files.writeString(nestedDir.resolve("kubernetes-deploy.md"),
+                """
+                # Kubernetes deploy
+
+                Nested deploy notes for Helm charts.
+                """, StandardCharsets.UTF_8);
+
+        KnowledgeBase knowledgeBase = new KnowledgeBase(tempDir.toString(), 3);
+        knowledgeBase.loadDocuments();
+        sourcesBuffer = new ToolSourcesBuffer();
+        tools = new KnowledgeTools(knowledgeBase, sourcesBuffer);
+
+        Map<String, String> doc = tools.get_document("deploy/kubernetes-deploy.md");
+        assertEquals("deploy/kubernetes-deploy.md", doc.get("file"));
+        assertEquals("Kubernetes deploy", doc.get("title"));
+        assertTrue(doc.get("content").contains("Helm charts"));
+
+        List<SourceDto> sources = sourcesBuffer.snapshot();
+        assertEquals(1, sources.size());
+        assertEquals("deploy/kubernetes-deploy.md", sources.getFirst().file());
+        assertFalse(sources.getFirst().excerpt().isBlank());
+    }
+
+    @Test
+    void searchKnowledgeReturnsNestedRelativePaths() throws IOException {
+        Path nestedDir = tempDir.resolve("ops/ci");
+        Files.createDirectories(nestedDir);
+        Files.writeString(nestedDir.resolve("runners.md"),
+                """
+                # CI runners
+
+                Tags shared-linux for self-hosted runners.
+                """, StandardCharsets.UTF_8);
+
+        KnowledgeBase knowledgeBase = new KnowledgeBase(tempDir.toString(), 3);
+        knowledgeBase.loadDocuments();
+        sourcesBuffer = new ToolSourcesBuffer();
+        tools = new KnowledgeTools(knowledgeBase, sourcesBuffer);
+
+        List<Map<String, String>> hits = tools.search_knowledge("shared-linux runners");
+        assertFalse(hits.isEmpty());
+        assertEquals("ops/ci/runners.md", hits.getFirst().get("file"));
+        assertTrue(sourcesBuffer.snapshot().isEmpty());
+    }
+
+    @Test
     void listTopicsReturnsFilesAndRegistersTopicSources() {
         List<Map<String, String>> topics = tools.list_topics();
         assertEquals(2, topics.size());

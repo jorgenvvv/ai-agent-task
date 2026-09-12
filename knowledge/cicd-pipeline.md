@@ -1,6 +1,6 @@
 # CI/CD pipeline
 
-Kirjeldus standardse GitLab CI/CD pipeline'i kohta SMIT teenuste jaoks. Pipeline on defineeritud failis `.gitlab-ci.yml` teenuse repos.
+Kirjeldus standardse GitLab CI/CD pipeline'i kohta organisatsiooni teenuste jaoks. Pipeline on defineeritud failis `.gitlab-ci.yml` teenuse repos.
 
 ## Pipeline etapid
 

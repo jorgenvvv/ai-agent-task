@@ -43,7 +43,7 @@ public class KnowledgeTools {
         this(knowledgeBase, sourcesBuffer, new SensitiveDataRedactor());
     }
 
-    @Tool(description = "List available knowledge base topics. Returns file name and title for each document. Use for overview questions like which topics are available.")
+    @Tool(description = "List available knowledge base topics. Returns relative file path and title for each document (including nested folders). Use for overview questions like which topics are available.")
     public List<Map<String, String>> list_topics() {
         try {
             List<Map<String, String>> topics = new ArrayList<>();
@@ -66,7 +66,7 @@ public class KnowledgeTools {
 
     @Tool(description = """
             Search the knowledge base with SHORT keywords (e.g. "CI pipeline tava", "GitLab ligipääs"), \
-            not the full user sentence. Returns candidate files with a short preview. \
+            not the full user sentence. Returns candidate files (relative paths, may include folders) with a short preview. \
             This does NOT count as a source — after choosing a file, call get_document to read it fully.""")
     public List<Map<String, String>> search_knowledge(
             @ToolParam(description = "Short search keywords in the knowledge base language") String query) {
@@ -101,11 +101,11 @@ public class KnowledgeTools {
     }
 
     @Tool(description = """
-            Read the full content of one knowledge base markdown file by exact file name \
-            (e.g. "cicd-pipeline.md"). Use after search_knowledge or list_topics. \
-            Only files read with this tool are treated as answer sources.""")
+            Read the full content of one knowledge base markdown file by exact relative path \
+            (e.g. "cicd-pipeline.md" or "deploy/kubernetes-deploy.md"). Use the exact "file" value \
+            returned by search_knowledge or list_topics. Only files read with this tool are treated as answer sources.""")
     public Map<String, String> get_document(
-            @ToolParam(description = "Exact markdown file name, e.g. cicd-pipeline.md") String file) {
+            @ToolParam(description = "Exact relative markdown path, e.g. cicd-pipeline.md or folder/doc.md") String file) {
         try {
             if (file == null || file.isBlank()) {
                 return Map.of("error", "file must not be blank");

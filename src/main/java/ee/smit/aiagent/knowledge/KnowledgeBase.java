@@ -73,11 +73,11 @@ public class KnowledgeBase {
             return;
         }
 
-        try (Stream<Path> stream = Files.list(baseDir)) {
+        try (Stream<Path> stream = Files.walk(baseDir)) {
             documents = stream
                     .filter(Files::isRegularFile)
                     .filter(path -> path.getFileName().toString().endsWith(".md"))
-                    .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                    .sorted(Comparator.comparing(this::toRelativeFileName))
                     .map(this::readDocument)
                     .flatMap(Optional::stream)
                     .toList();
@@ -117,9 +117,10 @@ public class KnowledgeBase {
 
     public Optional<KnowledgeDocument> getDocument(String fileName) {
         Path safePath = resolveSafePath(fileName);
+        String relativeName = toRelativeFileName(safePath);
 
         return documents.stream()
-                .filter(doc -> doc.fileName().equals(safePath.getFileName().toString()))
+                .filter(doc -> doc.fileName().equals(relativeName))
                 .findFirst()
                 .or(() -> readIfPresent(safePath));
     }
@@ -129,15 +130,27 @@ public class KnowledgeBase {
             throw new IllegalArgumentException("fileName must not be blank");
         }
 
-        if (fileName.contains("..") || fileName.contains("/") || fileName.contains("\\")) {
+        String normalized = fileName.trim().replace('\\', '/');
+        if (normalized.startsWith("/") || normalized.contains(":")) {
             throw new SecurityException("Path traversal is not allowed: " + fileName);
         }
 
-        if (!fileName.endsWith(".md")) {
+        String[] segments = normalized.split("/");
+        if (segments.length == 0) {
+            throw new SecurityException("Path traversal is not allowed: " + fileName);
+        }
+        for (String segment : segments) {
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                throw new SecurityException("Path traversal is not allowed: " + fileName);
+            }
+        }
+
+        if (!normalized.endsWith(".md")) {
             throw new IllegalArgumentException("Only markdown (.md) files are allowed: " + fileName);
         }
 
-        Path resolved = baseDir.resolve(fileName).normalize();
+        Path relative = Path.of("", segments);
+        Path resolved = baseDir.resolve(relative).normalize();
         if (!resolved.startsWith(baseDir)) {
             throw new SecurityException("Path escapes knowledge base directory: " + fileName);
         }
@@ -156,7 +169,7 @@ public class KnowledgeBase {
     private Optional<KnowledgeDocument> readDocument(Path path) {
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8);
-            String fileName = path.getFileName().toString();
+            String fileName = toRelativeFileName(path);
             if (sensitiveDataRedactor.containsSecret(content)) {
                 log.warn("Skipping knowledge file with secret-like content: {}", fileName);
                 return Optional.empty();
@@ -173,6 +186,11 @@ public class KnowledgeBase {
             return Optional.empty();
         }
         return readDocument(safePath);
+    }
+
+    private String toRelativeFileName(Path path) {
+        Path relative = baseDir.relativize(path.normalize());
+        return relative.toString().replace('\\', '/');
     }
 
     static String extractTitle(String content, String fileNameFallback) {
