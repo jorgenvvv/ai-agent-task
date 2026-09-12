@@ -1,6 +1,6 @@
 # Git töövoog ja branching
 
-Standardne Git töövoog SMIT arendusmeeskondades. Eesmärk on ühtne harustrateegia, turvaline `main` ja selge ajalugu.
+Standardne Git töövoog organisatsiooni arendusmeeskondades. Eesmärk on ühtne harustrateegia, turvaline `main` ja selge ajalugu.
 
 ## Harud
 
