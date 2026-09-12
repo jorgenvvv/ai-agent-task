@@ -195,9 +195,110 @@ class KnowledgeBaseTest {
         assertThrows(SecurityException.class,
                 () -> knowledgeBase.getDocument("..\\..\\windows\\system32"));
         assertThrows(SecurityException.class,
-                () -> knowledgeBase.getDocument("subdir/secret.md"));
+                () -> knowledgeBase.getDocument("foo/../secret.md"));
+        assertThrows(SecurityException.class,
+                () -> knowledgeBase.getDocument("foo/./secret.md"));
+        assertThrows(SecurityException.class,
+                () -> knowledgeBase.getDocument("/absolute/secret.md"));
         assertThrows(SecurityException.class,
                 () -> knowledgeBase.resolveSafePath("../../../etc/passwd"));
+    }
+
+    @Test
+    void getDocumentAllowsNestedRelativePathWhenPresent() throws IOException {
+        Path nestedDir = tempDir.resolve("team-a/deep");
+        Files.createDirectories(nestedDir);
+        Files.writeString(nestedDir.resolve("notes.md"),
+                """
+                # Nested notes
+
+                Deep folder content about onboarding checklist.
+                """, StandardCharsets.UTF_8);
+
+        knowledgeBase.loadDocuments();
+
+        Optional<KnowledgeDocument> doc = knowledgeBase.getDocument("team-a/deep/notes.md");
+        assertTrue(doc.isPresent());
+        assertEquals("team-a/deep/notes.md", doc.get().fileName());
+        assertEquals("Nested notes", doc.get().title());
+        assertTrue(doc.get().content().contains("onboarding checklist"));
+    }
+
+    @Test
+    void loadsMarkdownFromNestedDirectoriesRecursively() throws IOException {
+        Path nestedDir = tempDir.resolve("deploy/k8s");
+        Files.createDirectories(nestedDir);
+        Files.writeString(nestedDir.resolve("rollout.md"),
+                """
+                # Rollout guide
+
+                Blue-green rollout steps for production.
+                """, StandardCharsets.UTF_8);
+        Files.createDirectories(tempDir.resolve("team-a"));
+        Files.writeString(tempDir.resolve("team-a/guide.md"),
+                """
+                # Team guide
+
+                How the team works.
+                """, StandardCharsets.UTF_8);
+
+        knowledgeBase.loadDocuments();
+
+        Set<String> names = knowledgeBase.getDocuments().stream()
+                .map(KnowledgeDocument::fileName)
+                .collect(Collectors.toSet());
+        assertTrue(names.containsAll(Set.of(
+                "gitlab-access.md",
+                "deploy/k8s/rollout.md",
+                "team-a/guide.md"
+        )));
+        assertEquals(7, knowledgeBase.getDocuments().size());
+    }
+
+    @Test
+    void searchFindsNestedDocumentByPathAndContent() throws IOException {
+        Path nestedDir = tempDir.resolve("ops/ci");
+        Files.createDirectories(nestedDir);
+        Files.writeString(nestedDir.resolve("runners.md"),
+                """
+                # CI runners
+
+                Self-hosted runners use tags shared-linux.
+                """, StandardCharsets.UTF_8);
+
+        knowledgeBase.loadDocuments();
+
+        List<KnowledgeDocument> byContent = knowledgeBase.search("shared-linux runners");
+        assertFalse(byContent.isEmpty());
+        assertEquals("ops/ci/runners.md", byContent.getFirst().fileName());
+
+        List<KnowledgeDocument> byFolder = knowledgeBase.search("ops runners");
+        assertFalse(byFolder.isEmpty());
+        assertEquals("ops/ci/runners.md", byFolder.getFirst().fileName());
+    }
+
+    @Test
+    void getDocumentRequiresExactRelativePathNotBasename() throws IOException {
+        Path nestedDir = tempDir.resolve("shadow");
+        Files.createDirectories(nestedDir);
+        Files.writeString(nestedDir.resolve("gitlab-access.md"),
+                """
+                # Shadow GitLab
+
+                Nested duplicate basename must not match root basename lookup.
+                """, StandardCharsets.UTF_8);
+
+        knowledgeBase.loadDocuments();
+
+        Optional<KnowledgeDocument> root = knowledgeBase.getDocument("gitlab-access.md");
+        assertTrue(root.isPresent());
+        assertEquals("GitLab ligipääs", root.get().title());
+
+        Optional<KnowledgeDocument> nested = knowledgeBase.getDocument("shadow/gitlab-access.md");
+        assertTrue(nested.isPresent());
+        assertEquals("Shadow GitLab", nested.get().title());
+
+        assertTrue(knowledgeBase.getDocument("does-not-exist.md").isEmpty());
     }
 
     @Test
