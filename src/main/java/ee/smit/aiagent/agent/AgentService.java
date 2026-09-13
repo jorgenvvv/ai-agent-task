@@ -8,6 +8,8 @@ import ee.smit.aiagent.model.AskResponse;
 import ee.smit.aiagent.model.SourceDto;
 import ee.smit.aiagent.model.GuardDecision;
 import ee.smit.aiagent.model.GuardReasonCode;
+import ee.smit.aiagent.model.GroundingMode;
+import ee.smit.aiagent.model.LexicalGroundingResult;
 import ee.smit.aiagent.model.RefusalCategory;
 import ee.smit.aiagent.security.InputGuardService;
 import ee.smit.aiagent.security.SensitiveDataRedactor;
@@ -70,6 +72,9 @@ public class AgentService {
     private final SensitiveDataRedactor sensitiveDataRedactor;
     private final String openAiApiKey;
     private final boolean sessionEnabled;
+    private final boolean groundingEnabled;
+    private final GroundingMode groundingMode;
+    private final GroundingJudge groundingJudge;
 
     public AgentService(
             ChatClient chatClient,
@@ -78,16 +83,22 @@ public class AgentService {
             SessionSourcesCache sessionSourcesCache,
             InputGuardService inputGuardService,
             SensitiveDataRedactor sensitiveDataRedactor,
+            GroundingJudge groundingJudge,
             @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
-            @Value("${app.agent.session.enabled:true}") boolean sessionEnabled) {
+            @Value("${app.agent.session.enabled:true}") boolean sessionEnabled,
+            @Value("${app.agent.grounding.enabled:true}") boolean groundingEnabled,
+            @Value("${app.agent.grounding.mode:hybrid}") String groundingMode) {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.sourcesBuffer = sourcesBuffer;
         this.sessionSourcesCache = sessionSourcesCache;
         this.inputGuardService = inputGuardService;
         this.sensitiveDataRedactor = sensitiveDataRedactor;
+        this.groundingJudge = groundingJudge != null ? groundingJudge : GroundingJudge.rejectAll();
         this.openAiApiKey = openAiApiKey;
         this.sessionEnabled = sessionEnabled;
+        this.groundingEnabled = groundingEnabled;
+        this.groundingMode = GroundingMode.fromConfig(groundingMode);
     }
 
     public AskResponse ask(AskRequest request) {
@@ -142,12 +153,12 @@ public class AgentService {
             if (!cached.isEmpty()
                     && StringUtils.hasText(llmResponse.answer())
                     && !Boolean.TRUE.equals(llmResponse.refused())
-                    && isGroundedInSources(llmResponse.answer(), cached)) {
+                    && acceptsGrounding(llmResponse.answer(), cached)) {
                 sources = cached;
             }
         }
 
-        AskResponse response = applyPostRules(llmResponse, sources);
+        AskResponse response = applyPostRules(llmResponse, sources, groundingEnabled, groundingMode, groundingJudge);
         if (sessionKey != null && !response.refused() && !response.sources().isEmpty()) {
             sessionSourcesCache.put(sessionKey, response.sources());
         }
@@ -206,9 +217,24 @@ public class AgentService {
     }
 
     static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources) {
+        return applyPostRules(llm, toolSources, true, GroundingMode.LEXICAL, GroundingJudge.rejectAll());
+    }
+
+    static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources, boolean groundingEnabled) {
+        return applyPostRules(llm, toolSources, groundingEnabled, GroundingMode.LEXICAL, GroundingJudge.rejectAll());
+    }
+
+    static AskResponse applyPostRules(
+            AgentLlmResponse llm,
+            List<SourceDto> toolSources,
+            boolean groundingEnabled,
+            GroundingMode groundingMode,
+            GroundingJudge groundingJudge) {
         List<SourceDto> sources = sanitizeSources(toolSources);
         String answer = llm.answer() != null ? llm.answer() : "";
         String confidence = normalizeConfidence(llm.confidence(), llm.refused());
+        GroundingMode mode = groundingMode != null ? groundingMode : GroundingMode.LEXICAL;
+        GroundingJudge judge = groundingJudge != null ? groundingJudge : GroundingJudge.rejectAll();
 
         RefusalCategory category = null;
         if (llm.refused()) {
@@ -220,7 +246,7 @@ public class AgentService {
             answer = sanitizeCitations(answer, sources);
             if (containsUnsafeOutput(answer)) {
                 category = RefusalCategory.SECURITY;
-            } else if (!isGroundedInSources(answer, sources)) {
+            } else if (groundingEnabled && !acceptsGrounding(answer, sources, true, mode, judge)) {
                 category = RefusalCategory.UNGROUNDED;
             }
         }
@@ -246,14 +272,46 @@ public class AgentService {
                 resolved.refusalReason());
     }
 
+    private boolean acceptsGrounding(String answer, List<SourceDto> sources) {
+        return acceptsGrounding(answer, sources, groundingEnabled, groundingMode, groundingJudge);
+    }
+
+    static boolean acceptsGrounding(
+            String answer,
+            List<SourceDto> sources,
+            boolean groundingEnabled,
+            GroundingMode groundingMode,
+            GroundingJudge groundingJudge) {
+        if (!groundingEnabled) {
+            return true;
+        }
+        LexicalGroundingResult lexical = assessLexicalGrounding(answer, sources);
+        return switch (lexical) {
+            case OK -> true;
+            case HARD_FAIL -> false;
+            case SOFT_FAIL -> {
+                GroundingMode mode = groundingMode != null ? groundingMode : GroundingMode.LEXICAL;
+                if (mode != GroundingMode.HYBRID) {
+                    yield false;
+                }
+                GroundingJudge judge = groundingJudge != null ? groundingJudge : GroundingJudge.rejectAll();
+                yield judge.isGrounded(answer, sources);
+            }
+        };
+    }
+
     static boolean isGroundedInSources(String answer, List<SourceDto> sources) {
+        return assessLexicalGrounding(answer, sources) == LexicalGroundingResult.OK;
+    }
+
+    static LexicalGroundingResult assessLexicalGrounding(String answer, List<SourceDto> sources) {
         if (!StringUtils.hasText(answer) || sources == null || sources.isEmpty()) {
-            return false;
+            return LexicalGroundingResult.HARD_FAIL;
         }
 
         String corpus = sourceCorpus(sources);
         if (corpus.isEmpty()) {
-            return false;
+            return LexicalGroundingResult.HARD_FAIL;
         }
 
         String text = CITATION_PATTERN.matcher(answer).replaceAll(" ");
@@ -264,22 +322,22 @@ public class AgentService {
             String url = urls.group().toLowerCase(Locale.ROOT);
             url = url.replaceAll("[),.;!?]+$", "");
             if (!corpus.contains(url)) {
-                return false;
+                return LexicalGroundingResult.HARD_FAIL;
             }
         }
 
         for (String number : extractNumbers(text)) {
             if (!corpus.contains(number)) {
-                return false;
+                return LexicalGroundingResult.HARD_FAIL;
             }
         }
 
         if (!numberWordPairsSupported(text, corpus)) {
-            return false;
+            return LexicalGroundingResult.HARD_FAIL;
         }
 
         if (!overlapPercentAtLeast(text, corpus, MIN_GROUND_OVERLAP_PERCENT)) {
-            return false;
+            return LexicalGroundingResult.SOFT_FAIL;
         }
 
         for (String sentence : splitSentences(text)) {
@@ -287,11 +345,11 @@ public class AgentService {
                 continue;
             }
             if (!overlapPercentAtLeast(sentence, corpus, MIN_SENTENCE_OVERLAP_PERCENT)) {
-                return false;
+                return LexicalGroundingResult.SOFT_FAIL;
             }
         }
 
-        return true;
+        return LexicalGroundingResult.OK;
     }
 
     static List<String> splitSentences(String text) {

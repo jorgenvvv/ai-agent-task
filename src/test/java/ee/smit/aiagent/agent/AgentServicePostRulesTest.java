@@ -2,11 +2,15 @@ package ee.smit.aiagent.agent;
 
 import ee.smit.aiagent.model.AgentLlmResponse;
 import ee.smit.aiagent.model.AskResponse;
+import ee.smit.aiagent.model.GroundingMode;
+import ee.smit.aiagent.model.LexicalGroundingResult;
 import ee.smit.aiagent.model.RefusalCategory;
 import ee.smit.aiagent.model.SourceDto;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -521,5 +525,163 @@ class AgentServicePostRulesTest {
         assertEquals(UNGROUNDED_ANSWER, response.answer());
         assertEquals(UNGROUNDED_REASON, response.refusalReason());
         assertFalse(response.answer().contains("audit.invalid"));
+    }
+
+    @Test
+    void groundingDisabledAllowsUngroundedAnswer() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources, false);
+
+        assertFalse(response.refused(), response.toString());
+        assertTrue(response.answer().contains("5 minut"));
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]"));
+        assertEquals("high", response.confidence());
+    }
+
+    @Test
+    void groundingEnabledByDefaultStillRefusesUngroundedAnswer() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
+    }
+
+    @Test
+    void assessLexical_hardFailOnUnknownNumber() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        String answer = "Taotle ligipääsu teenuste portaalis. Maintaineri õigused antakse automaatselt 5 minutiga.";
+        assertEquals(LexicalGroundingResult.HARD_FAIL, AgentService.assessLexicalGrounding(answer, sources));
+    }
+
+    @Test
+    void assessLexical_softFailOnHeavyParaphraseWithoutNewNumbers() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "support/vpn-access.md",
+                        "VPN ligipääs",
+                        "Ava organisatsiooni teenuste portaal. Vali Ligipääsutaotlus VPN. Oota juhi kinnitust."));
+        String answer = "Kaughalduseks tuleb esmalt läbida organisatsiooni sisevõrgu ühenduse taotlemise protseduur portaalis ja seejärel oodata kinnitust.";
+        assertEquals(LexicalGroundingResult.SOFT_FAIL, AgentService.assessLexicalGrounding(answer, sources));
+    }
+
+    @Test
+    void hybridSoftFailAcceptedWhenJudgeGrounds() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "support/vpn-access.md",
+                        "VPN ligipääs",
+                        "Ava organisatsiooni teenuste portaal. Vali Ligipääsutaotlus VPN. Oota juhi kinnitust."));
+        String answer = "Kaughalduseks tuleb esmalt läbida organisatsiooni sisevõrgu ühenduse taotlemise protseduur portaalis ja seejärel oodata kinnitust.";
+        assertEquals(LexicalGroundingResult.SOFT_FAIL, AgentService.assessLexicalGrounding(answer, sources));
+
+        AtomicInteger judgeCalls = new AtomicInteger();
+        GroundingJudge judge = (a, s) -> {
+            judgeCalls.incrementAndGet();
+            return true;
+        };
+        AgentLlmResponse llm = new AgentLlmResponse(answer, false, null, "high");
+        AskResponse response = AgentService.applyPostRules(
+                llm, sources, true, GroundingMode.HYBRID, judge);
+
+        assertFalse(response.refused(), response.toString());
+        assertEquals(1, judgeCalls.get());
+        assertEquals("support/vpn-access.md", response.sources().getFirst().file());
+        assertTrue(response.answer().contains("[allikas:"));
+    }
+
+    @Test
+    void hybridSoftFailRefusedWhenJudgeRejects() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "support/vpn-access.md",
+                        "VPN ligipääs",
+                        "Ava organisatsiooni teenuste portaal. Vali Ligipääsutaotlus VPN. Oota juhi kinnitust."));
+        String answer = "Kaughalduseks tuleb esmalt läbida organisatsiooni sisevõrgu ühenduse taotlemise protseduur portaalis ja seejärel oodata kinnitust.";
+        AtomicInteger judgeCalls = new AtomicInteger();
+        GroundingJudge judge = (a, s) -> {
+            judgeCalls.incrementAndGet();
+            return false;
+        };
+        AgentLlmResponse llm = new AgentLlmResponse(answer, false, null, "high");
+        AskResponse response = AgentService.applyPostRules(
+                llm, sources, true, GroundingMode.HYBRID, judge);
+
+        assertTrue(response.refused(), response.toString());
+        assertEquals(1, judgeCalls.get());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
+    }
+
+    @Test
+    void hybridHardFailDoesNotCallJudge() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AtomicBoolean called = new AtomicBoolean(false);
+        GroundingJudge judge = (a, s) -> {
+            called.set(true);
+            return true;
+        };
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+        AskResponse response = AgentService.applyPostRules(
+                llm, sources, true, GroundingMode.HYBRID, judge);
+
+        assertTrue(response.refused(), response.toString());
+        assertFalse(called.get(), "judge must not run on lexical HARD_FAIL");
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
+    }
+
+    @Test
+    void lexicalModeSoftFailDoesNotCallJudge() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "support/vpn-access.md",
+                        "VPN ligipääs",
+                        "Ava organisatsiooni teenuste portaal. Vali Ligipääsutaotlus VPN. Oota juhi kinnitust."));
+        String answer = "Kaughalduseks tuleb esmalt läbida organisatsiooni sisevõrgu ühenduse taotlemise protseduur portaalis ja seejärel oodata kinnitust.";
+        AtomicBoolean called = new AtomicBoolean(false);
+        GroundingJudge judge = (a, s) -> {
+            called.set(true);
+            return true;
+        };
+        AgentLlmResponse llm = new AgentLlmResponse(answer, false, null, "high");
+        AskResponse response = AgentService.applyPostRules(
+                llm, sources, true, GroundingMode.LEXICAL, judge);
+
+        assertTrue(response.refused(), response.toString());
+        assertFalse(called.get());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
     }
 }

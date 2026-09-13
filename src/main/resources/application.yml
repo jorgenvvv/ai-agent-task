@@ -18,6 +18,11 @@ app:
       top-k: ${KNOWLEDGE_SEARCH_TOP_K:3}
   agent:
     max-question-length: 2000
+    grounding:
+      enabled: ${AGENT_GROUNDING_ENABLED:true}
+      mode: ${AGENT_GROUNDING_MODE:hybrid}
+      judge-max-corpus-chars: ${AGENT_GROUNDING_JUDGE_MAX_CORPUS_CHARS:6000}
+      judge-max-answer-chars: ${AGENT_GROUNDING_JUDGE_MAX_ANSWER_CHARS:4000}
     session:
       enabled: true
       max-messages: ${AGENT_SESSION_MAX_MESSAGES:20}

@@ -38,8 +38,11 @@ class AgentServiceProviderErrorTest {
                 new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
+                GroundingJudge.rejectAll(),
                 "test-key",
-                true);
+                true,
+                true,
+                "lexical");
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,

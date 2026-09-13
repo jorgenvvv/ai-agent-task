@@ -126,6 +126,7 @@ Näidis: `.env.example`
 | `AGENT_SESSION_MAX_MESSAGES` | `20` | Sõnumeid sessiooni aknas |
 | `AGENT_SESSION_MAX_SESSIONS` | `1000` | Max sessioone mälus |
 | `AGENT_SESSION_TTL` | `45m` | Sessiooni TTL |
+| `AGENT_GROUNDING_ENABLED` | `true` | Vastuse allikatega kokkusobivuse kontroll (UNGROUNDED); `false` lülitab grounding-keeldumise välja |
 | `AGENT_RATE_LIMIT_ENABLED` | `true` | Rate limit |
 | `AGENT_RATE_LIMIT_RPM` | `10` | Päringuid minutis IP kohta |
 | `AGENT_TRUST_FORWARDED_HEADERS` | `false` | Proxy IP pealkirjad |
