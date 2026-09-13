@@ -105,11 +105,20 @@ Valikuliselt: `AGENT_BASE_URL`, `AGENT_SESSION_ID`.
 
 ## Turvalisus
 
-- **Sisendi valideerimine enne LLM-i:** tühjad/liiga pikad küsimused → 400; teadaolevad injection-mustrid ja secret-laadsed mustrid → `refused` ilma LLM kutseta; isikukoodi-laadsed numbrid maskitakse.
-- **Prompt injection:** system ja user rollid on eraldatud; kasutaja sisendit ei käsitleta süsteemijuhisena; prompt + järelkontroll takistavad prompti/tööriistade lekkeid.
-- **Ulatus:** ainult allowlist tööriistad teadmusbaasi lugemiseks; faktiline vastus peab olema seotud loetud allikatega.
-- **Rate limiting:** vaikimisi 10 päringut minutis IP kohta (`POST /api/v1/agent/ask`).
-- **Andmed:** täielikku küsimust ei logita
+- **Sisendi kontroll enne LLM-i**
+  - tühi või üle 2000 tähemärgi küsimus → HTTP 400, mudelit ei kutsuta
+  - teadaolevad ründemustrid (nt „ignoreeri eelmisi juhiseid“, rolli ümberkirjutamine) → kohe `refused: true`, mudelit ei kutsuta
+  - API võtme / parooli sarnased mustrid → `refused: true`, mudelit ei kutsuta
+  - isikukoodi sarnased numbrid asendatakse enne mudelisse saatmist (`[REDACTED]`)
+- **Prompt injection**
+  - süsteemi- ja kasutajarollid on eraldi; kasutaja teksti ei kasutata kunagi süsteemijuhisena
+  - süsteemiprompt keelab prompti, tööriistade ja sisemiste reeglite avaldamise
+  - vastust kontrollitakse pärast mudelit; kahtlane leke asendatakse keeldumisega
+- **Ulatus**
+  - mudelil on ainult lubatud tööriistad teadmusbaasi lugemiseks
+  - faktiline vastus peab tuginema loetud allikatele; muidu keeldutakse või usaldus on madal
+- **Rate limiting:** vaikimisi 10 päringut minutis IP kohta (`POST /api/v1/agent/ask`)
+- **Andmed:** täielikku küsimust ei logita; `sessionId` logides on hashitud
 
 
 ## Konfiguratsioon
@@ -127,6 +136,7 @@ Näidis: `.env.example`
 | `AGENT_SESSION_MAX_SESSIONS` | `1000` | Max sessioone mälus |
 | `AGENT_SESSION_TTL` | `45m` | Sessiooni TTL |
 | `AGENT_GROUNDING_ENABLED` | `true` | Vastuse allikatega kokkusobivuse kontroll (UNGROUNDED); `false` lülitab grounding-keeldumise välja |
+| `AGENT_GROUNDING_MODE` | `hybrid` | `lexical` = ainult sõnade/numbrite kontroll; `hybrid` = lexical hard-fail jääb, soft-fail kontrollitakse teise LLM-kutsega |
 | `AGENT_RATE_LIMIT_ENABLED` | `true` | Rate limit |
 | `AGENT_RATE_LIMIT_RPM` | `10` | Päringuid minutis IP kohta |
 | `AGENT_TRUST_FORWARDED_HEADERS` | `false` | Proxy IP pealkirjad |
@@ -138,6 +148,7 @@ Rakenduse seadistus: `src/main/resources/application.yml`.
 
 ### Eeldused
 
+- Projekti kood allalaetud või git-ist kloonitud
 - JDK **21** (puudumisel proovib Gradle toolchain automaatset resolverit)
 - OpenAI API võti kas keskkonnamuutujana `OPENAI_API_KEY` või lisada `.env` faili.
 
@@ -145,7 +156,6 @@ Rakenduse seadistus: `src/main/resources/application.yml`.
 ### Rakenduse käivitamine käsurealt
 
 ```bash
-export OPENAI_API_KEY=sk-...   # või loe .env-st (mitte commiti)
 ./gradlew bootRun
 ```
 
@@ -162,26 +172,25 @@ HTML raport: `build/reports/tests/test/index.html`
 
 ### Integratsioonitestid
 
+Integratsioonitestide jooksutamiseks peab olema OPENAI_API_KEY seadistatud.
+
+Rate limit on nendes testides välja lülitatud.
+
 ```bash
 ./gradlew integrationTest
 ```
-
-- Vajavad võtit (Gradle `doFirst` peatab käivituse, kui võti puudub).
-- Rate limit on nendes testides välja lülitatud.
-- LLM on stohhastiline — testid kontrollivad käitumist (refused, allikad, lekke puudumine), mitte sõna-sõnalist teksti.
 
 HTML raport: `build/reports/tests/integrationTest/index.html`
 
 
 ### CI (GitHub Actions)
 
-Fail: `.github/workflows/ci.yml`.
+| Job | Tingimus                                                                     | Artefakt |
+|-----|------------------------------------------------------------------------------|----------|
+| Unit tests | Push main harusse, pull request või käsitsi käivitus                         | `unit-test-report` |
+| Integration tests | Pärast unit tests taski, ainult siis kui secret `OPENAI_API_KEY` on määratud | `integration-test-report` |
 
-| Job | Tingimus                                                           | Artefakt |
-|-----|--------------------------------------------------------------------|----------|
-| Unit tests | Alati (push/PR `main`, `workflow_dispatch`)                        | `unit-test-report` |
-| Integration tests | Pärast unit’i; ainult siis kui secret `OPENAI_API_KEY` on määratud | `integration-test-report` |
+Testide tulemusena publitseeritakse githubi artefaktid, mis sisaldavad HTML kujul testiraporteid. Artefakte säilitatakse 30 päeva.
 
-Kui secret puudub, jäetakse integratsioonitestid vahele (notice logis). Artefaktide säilitus: 30 päeva.
-
-Tulemuste ülevaatus: GitHub **Actions** → vali workflow run → **Artifacts** (`unit-test-report` / `integration-test-report`).
+* unit-test-report: `build/reports/tests/test/index.html`
+* integration-test-report: `build/reports/tests/integrationTest/index.html`
