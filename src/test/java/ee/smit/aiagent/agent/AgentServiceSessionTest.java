@@ -73,6 +73,7 @@ class AgentServiceSessionTest {
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
+                true,
                 true);
     }
 
@@ -144,7 +145,8 @@ class AgentServiceSessionTest {
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
-                false);
+                false,
+                true);
         assertNull(disabled.resolveSessionKey("valid-id"));
     }
 
@@ -182,6 +184,7 @@ class AgentServiceSessionTest {
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
+                true,
                 true);
 
         AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", null));
@@ -212,6 +215,7 @@ class AgentServiceSessionTest {
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
+                true,
                 true);
 
         AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", "repeat-1"));
@@ -252,6 +256,7 @@ class AgentServiceSessionTest {
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
+                true,
                 true);
 
         String sid = "cache-reuse-1";

@@ -56,7 +56,7 @@ Rakenduse tasemel (mitte ainult promptis):
 
 - Kui mudel märgib `refused: true`, vastus asendatakse serveri **OUT_OF_SCOPE** tekstiga (mudeli `answer`/`refusalReason` ei leki).
 - Kui allikad on tühjad (dokumenti ei loetud) → **NO_SOURCE**.
-- Kui allikad on olemas, aga vastus ei ole nendega leksikaalselt kokkusobiv → **UNGROUNDED**.
+- Kui allikad on olemas, aga vastus ei ole nendega leksikaalselt kokkusobiv → **UNGROUNDED** (kontrolli saab välja lülitada: `app.agent.grounding.enabled=false` / `AGENT_GROUNDING_ENABLED=false`).
 - Kui vastus sisaldab ohtlikku väljundit (tool-leke, markerid) → **SECURITY**.
 - Kui päringul on `sessionId`, aga agent seekord dokumenti ei lugenud:
   - kui eelmise vastuse allikad on veel mälus **ja** uus vastus sobib nendega kokku → kasutatakse neid allikaid uuesti (sh viide vastuses);

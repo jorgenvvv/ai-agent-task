@@ -70,6 +70,7 @@ public class AgentService {
     private final SensitiveDataRedactor sensitiveDataRedactor;
     private final String openAiApiKey;
     private final boolean sessionEnabled;
+    private final boolean groundingEnabled;
 
     public AgentService(
             ChatClient chatClient,
@@ -79,7 +80,8 @@ public class AgentService {
             InputGuardService inputGuardService,
             SensitiveDataRedactor sensitiveDataRedactor,
             @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
-            @Value("${app.agent.session.enabled:true}") boolean sessionEnabled) {
+            @Value("${app.agent.session.enabled:true}") boolean sessionEnabled,
+            @Value("${app.agent.grounding.enabled:true}") boolean groundingEnabled) {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.sourcesBuffer = sourcesBuffer;
@@ -88,6 +90,7 @@ public class AgentService {
         this.sensitiveDataRedactor = sensitiveDataRedactor;
         this.openAiApiKey = openAiApiKey;
         this.sessionEnabled = sessionEnabled;
+        this.groundingEnabled = groundingEnabled;
     }
 
     public AskResponse ask(AskRequest request) {
@@ -142,12 +145,12 @@ public class AgentService {
             if (!cached.isEmpty()
                     && StringUtils.hasText(llmResponse.answer())
                     && !Boolean.TRUE.equals(llmResponse.refused())
-                    && isGroundedInSources(llmResponse.answer(), cached)) {
+                    && (!groundingEnabled || isGroundedInSources(llmResponse.answer(), cached))) {
                 sources = cached;
             }
         }
 
-        AskResponse response = applyPostRules(llmResponse, sources);
+        AskResponse response = applyPostRules(llmResponse, sources, groundingEnabled);
         if (sessionKey != null && !response.refused() && !response.sources().isEmpty()) {
             sessionSourcesCache.put(sessionKey, response.sources());
         }
@@ -206,6 +209,10 @@ public class AgentService {
     }
 
     static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources) {
+        return applyPostRules(llm, toolSources, true);
+    }
+
+    static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources, boolean groundingEnabled) {
         List<SourceDto> sources = sanitizeSources(toolSources);
         String answer = llm.answer() != null ? llm.answer() : "";
         String confidence = normalizeConfidence(llm.confidence(), llm.refused());
@@ -220,7 +227,7 @@ public class AgentService {
             answer = sanitizeCitations(answer, sources);
             if (containsUnsafeOutput(answer)) {
                 category = RefusalCategory.SECURITY;
-            } else if (!isGroundedInSources(answer, sources)) {
+            } else if (groundingEnabled && !isGroundedInSources(answer, sources)) {
                 category = RefusalCategory.UNGROUNDED;
             }
         }

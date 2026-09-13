@@ -86,6 +86,7 @@ class AgentServiceGuardrailTest {
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
+                true,
                 true);
     }
 

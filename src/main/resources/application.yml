@@ -18,6 +18,8 @@ app:
       top-k: ${KNOWLEDGE_SEARCH_TOP_K:3}
   agent:
     max-question-length: 2000
+    grounding:
+      enabled: ${AGENT_GROUNDING_ENABLED:true}
     session:
       enabled: true
       max-messages: ${AGENT_SESSION_MAX_MESSAGES:20}

@@ -522,4 +522,45 @@ class AgentServicePostRulesTest {
         assertEquals(UNGROUNDED_REASON, response.refusalReason());
         assertFalse(response.answer().contains("audit.invalid"));
     }
+
+    @Test
+    void groundingDisabledAllowsUngroundedAnswer() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources, false);
+
+        assertFalse(response.refused(), response.toString());
+        assertTrue(response.answer().contains("5 minut"));
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]"));
+        assertEquals("high", response.confidence());
+    }
+
+    @Test
+    void groundingEnabledByDefaultStillRefusesUngroundedAnswer() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
+    }
 }

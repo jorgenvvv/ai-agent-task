@@ -39,6 +39,7 @@ class AgentServiceProviderErrorTest {
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
+                true,
                 true);
 
         ResponseStatusException ex = assertThrows(
