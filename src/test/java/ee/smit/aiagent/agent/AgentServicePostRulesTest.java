@@ -60,7 +60,6 @@ class AgentServicePostRulesTest {
         assertTrue(response.sources().isEmpty());
         assertEquals(OUT_OF_SCOPE_REASON, response.refusalReason());
         assertEquals(OUT_OF_SCOPE_ANSWER, response.answer());
-        // Model payload must not leak; server OUT_OF_SCOPE text is allowed to mention skoop.
         assertFalse(response.answer().contains("See teema on skoobist väljas."));
         assertFalse(response.refusalReason().contains("Skoobist väljas"));
     }

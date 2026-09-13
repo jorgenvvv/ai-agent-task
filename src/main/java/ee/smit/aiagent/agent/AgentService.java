@@ -171,7 +171,6 @@ public class AgentService {
     }
 
     static AskResponse refusedResponse(GuardReasonCode reasonCode) {
-        // Detailed code stays in logs only; API always uses SECURITY text.
         return sanitizedRefusal(RefusalCategory.SECURITY);
     }
 
@@ -238,7 +237,6 @@ public class AgentService {
 
         RefusalCategory category = null;
         if (llm.refused()) {
-            // Model-initiated refuse is treated as out of scope; never echo model texts.
             category = RefusalCategory.OUT_OF_SCOPE;
         } else if (sources.isEmpty()) {
             category = RefusalCategory.NO_SOURCE;

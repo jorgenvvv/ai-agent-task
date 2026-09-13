@@ -183,7 +183,7 @@ Rate limit on nendes testides välja lülitatud.
 HTML raport: `build/reports/tests/integrationTest/index.html`
 
 
-### CI (GitHub Actions)
+### CI (GitHub Actions) ja testiraportid
 
 | Job | Tingimus                                                                     | Artefakt |
 |-----|------------------------------------------------------------------------------|----------|
