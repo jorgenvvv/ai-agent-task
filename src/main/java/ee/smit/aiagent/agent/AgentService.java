@@ -1,5 +1,6 @@
 package ee.smit.aiagent.agent;
 
+import ee.smit.aiagent.knowledge.SessionSourcesCache;
 import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
 import ee.smit.aiagent.model.AgentLlmResponse;
 import ee.smit.aiagent.model.AskRequest;
@@ -54,12 +55,19 @@ public class AgentService {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
     private static final Pattern WORD_SPLIT = Pattern.compile("[^\\p{L}\\p{N}]+");
+    private static final Pattern NUMBER_PATTERN = Pattern.compile("\\d+");
+    private static final Pattern SENTENCE_SPLIT = Pattern.compile("(?<=[.!?])\\s+");
+    private static final Pattern NUMBER_THEN_WORD = Pattern.compile(
+            "(\\d+)\\s*([\\p{L}][\\p{L}\\p{N}]{2,})",
+            Pattern.UNICODE_CHARACTER_CLASS);
     private static final int MIN_GROUND_WORD_LEN = 4;
-    private static final int MIN_GROUND_OVERLAP_PERCENT = 60;
+    private static final int MIN_GROUND_OVERLAP_PERCENT = 70;
+    private static final int MIN_SENTENCE_OVERLAP_PERCENT = 50;
 
     private final ChatClient chatClient;
     private final ChatMemory chatMemory;
     private final ToolSourcesBuffer sourcesBuffer;
+    private final SessionSourcesCache sessionSourcesCache;
     private final InputGuardService inputGuardService;
     private final SensitiveDataRedactor sensitiveDataRedactor;
     private final String openAiApiKey;
@@ -69,6 +77,7 @@ public class AgentService {
             ChatClient chatClient,
             ChatMemory chatMemory,
             ToolSourcesBuffer sourcesBuffer,
+            SessionSourcesCache sessionSourcesCache,
             InputGuardService inputGuardService,
             SensitiveDataRedactor sensitiveDataRedactor,
             @Value("${spring.ai.openai.api-key:}") String openAiApiKey,
@@ -76,6 +85,7 @@ public class AgentService {
         this.chatClient = chatClient;
         this.chatMemory = chatMemory;
         this.sourcesBuffer = sourcesBuffer;
+        this.sessionSourcesCache = sessionSourcesCache;
         this.inputGuardService = inputGuardService;
         this.sensitiveDataRedactor = sensitiveDataRedactor;
         this.openAiApiKey = openAiApiKey;
@@ -129,7 +139,21 @@ public class AgentService {
         }
 
         List<SourceDto> sources = sourcesBuffer.snapshot();
-        return applyPostRules(llmResponse, sources, sessionKey != null);
+        if (sources.isEmpty() && sessionKey != null) {
+            List<SourceDto> cached = sessionSourcesCache.get(sessionKey);
+            if (!cached.isEmpty()
+                    && StringUtils.hasText(llmResponse.answer())
+                    && !Boolean.TRUE.equals(llmResponse.refused())
+                    && isGroundedInSources(llmResponse.answer(), cached)) {
+                sources = cached;
+            }
+        }
+
+        AskResponse response = applyPostRules(llmResponse, sources, sessionKey != null);
+        if (sessionKey != null && !response.refused() && !response.sources().isEmpty()) {
+            sessionSourcesCache.put(sessionKey, response.sources());
+        }
+        return response;
     }
 
     private void logRejected(GuardReasonCode reasonCode, String sessionHash, int length) {
@@ -191,7 +215,6 @@ public class AgentService {
         boolean refused = llm.refused();
         String answer = llm.answer() != null ? llm.answer() : "";
         String confidence = normalizeConfidence(llm.confidence(), refused);
-
         if (!refused && sources.isEmpty() && !sessionTurn) {
             refused = true;
         }
@@ -247,22 +270,130 @@ public class AgentService {
             }
         }
 
+        for (String number : extractNumbers(text)) {
+            if (!corpus.contains(number)) {
+                return false;
+            }
+        }
+
+        if (!numberWordPairsSupported(text, corpus)) {
+            return false;
+        }
+
+        if (!overlapPercentAtLeast(text, corpus, MIN_GROUND_OVERLAP_PERCENT)) {
+            return false;
+        }
+
+        for (String sentence : splitSentences(text)) {
+            if (!isSubstantiveSentence(sentence)) {
+                continue;
+            }
+            if (!overlapPercentAtLeast(sentence, corpus, MIN_SENTENCE_OVERLAP_PERCENT)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    static List<String> splitSentences(String text) {
+        if (!StringUtils.hasText(text)) {
+            return List.of();
+        }
+        String normalized = text.trim();
+        String[] raw = SENTENCE_SPLIT.split(normalized);
+        List<String> sentences = new ArrayList<>();
+        for (String part : raw) {
+            if (part != null && !part.isBlank()) {
+                sentences.add(part.trim());
+            }
+        }
+        if (sentences.isEmpty() && !normalized.isBlank()) {
+            sentences.add(normalized);
+        }
+        return sentences;
+    }
+
+    static List<String> extractNumbers(String text) {
+        if (!StringUtils.hasText(text)) {
+            return List.of();
+        }
+        List<String> numbers = new ArrayList<>();
+        Matcher matcher = NUMBER_PATTERN.matcher(text);
+        while (matcher.find()) {
+            numbers.add(matcher.group());
+        }
+        return numbers;
+    }
+
+    static boolean numberWordPairsSupported(String text, String corpus) {
+        if (!StringUtils.hasText(text) || !StringUtils.hasText(corpus)) {
+            return true;
+        }
+        Matcher matcher = NUMBER_THEN_WORD.matcher(text);
+        while (matcher.find()) {
+            String number = matcher.group(1);
+            String word = matcher.group(2).toLowerCase(Locale.ROOT);
+            if (!corpus.contains(number)) {
+                return false;
+            }
+            if (!tokenSupportedByCorpus(word, corpus)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isSubstantiveSentence(String sentence) {
+        int significant = 0;
+        for (String part : WORD_SPLIT.split(sentence)) {
+            if (isGroundToken(part)) {
+                significant++;
+                if (significant >= 2) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isGroundToken(String part) {
+        return part != null && part.length() >= MIN_GROUND_WORD_LEN;
+    }
+
+    private static boolean overlapPercentAtLeast(String text, String corpus, int minPercent) {
         String[] parts = WORD_SPLIT.split(text);
         int significant = 0;
         int matched = 0;
         for (String part : parts) {
-            if (part == null || part.length() < MIN_GROUND_WORD_LEN) {
+            if (!isGroundToken(part)) {
                 continue;
             }
             significant++;
-            if (corpus.contains(part)) {
+            if (tokenSupportedByCorpus(part, corpus)) {
                 matched++;
             }
         }
         if (significant == 0) {
             return false;
         }
-        return matched * 100 >= significant * MIN_GROUND_OVERLAP_PERCENT;
+        return matched * 100 >= significant * minPercent;
+    }
+
+    private static boolean tokenSupportedByCorpus(String token, String corpus) {
+        if (corpus.contains(token)) {
+            return true;
+        }
+        if (token.length() <= MIN_GROUND_WORD_LEN) {
+            return false;
+        }
+        int maxDrop = Math.min(3, token.length() - MIN_GROUND_WORD_LEN);
+        for (int drop = 1; drop <= maxDrop; drop++) {
+            if (corpus.contains(token.substring(0, token.length() - drop))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String sourceCorpus(List<SourceDto> sources) {
