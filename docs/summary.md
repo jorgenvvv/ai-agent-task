@@ -1,141 +1,89 @@
 # Lahenduse kokkuvõte
 
-## Arhitektuur
+## Agendi arhitektuur
 
 ```
 Klient
-  → RateLimitFilter (IP-põhine)
-  → AgentController (sisendi validatsioon)
+  → RateLimitFilter (IP-põhine piirang POST /api/v1/agent/ask peal)
+  → AgentController (JSON + Bean Validation: question, sessionId)
   → AgentService
-       → InputGuard / SensitiveDataRedactor   (sisendi kontroll, tundlike andmete eemaldus enne LLM-i)
-       → ChatClient (LLM päring kasutaja küsimuse alusel)
-       → KnowledgeTools → KnowledgeBase
-       → applyPostRules (järelfiltrid allikate korrastamiseks, viitamiseks, vastuse grounding, lekete kontroll)
+       → InputGuardService          (injection-mustrid → vastus kohe refused)
+       → SensitiveDataRedactor      (secret → vastus refused; PII maskimine)
+       → ChatClient (süsteemiprompt + KnowledgeTools)
+            → list_topics / search_knowledge / get_document
+            → KnowledgeBase (mällu laetud markdown)
+       → ToolSourcesBuffer / SessionSourcesCache
+       → applyPostRules
+            → allikad, viited, lekked, grounding
+            → hybrid: lexical soft-fail → GroundingJudge
+              (eraldi tool-free ChatClient)
   → AskResponse JSON
 ```
 
-Vastutused on eraldatud: HTTP kiht valideerib päringu kuju, turvakihid otsustavad enne mudelit, Spring AI teeb tool calling’u, rakenduse järelkontroll sunnib allikaviiteid ja keeldumisi ka siis, kui mudel eksib.
+### Süsteemiprompt
 
-
-## Tööriistad ja teadmusbaas
-
-Agendile on kasutatavad ainult järgnevad tööriistad (allowlist):
-
-| Tool | Seletus |
-|------|---------|
-| `list_topics` | Teemade loetelu (suhteline failitee + faili pealkiri) |
-| `search_knowledge` | Lühikeste märksõnadega otsing (eelvaade; **ei** ole allikas) |
-| `get_document` | Ühe faili täisteksti päring; **peamiselt** selle kaudu loetud failid lähevad `sources`-isse |
-
-Kõik tööriistad loevad ainult teadmusbaasis olevaid dokumente. Üldist „käivita käsk“ või välist API tööriista pole.
-
-Teadmusbaas asub repositooriumi `knowledge` kaustas (markdown, sh alamkaustad). Käivitamisel laetakse mällu kõik `**/*.md` failid. Otsinguna on kasutusel primitiivne *full-scan* + skoori arvutus (pealkiri/failinimi/sisu, stop-sõnad, top-K).
-
-
-## Süsteemiprompt ja rollid
-
-Fail: `src/main/resources/prompts/system-prompt.md`.
-
-Määrab rolli (IT FAQ), eesti keele, tööriistade kasutuse, allikaviited, keeldumised ja keelud (prompti/tööriistade lekke vastu).
-
-Kasutaja poolt antav sisend on alati **user** rollis ja seda ei käsitleta süsteemijuhisena. System ja user rollid on Spring AI vahendite kaudu eraldatud.
-
-
-## Sessioon
-
-Valikuline väli `sessionId` (1–100 märki, muster `[a-zA-Z0-9_-]`).
-
-- Ilma `sessionId`-ta: iga küsimus on eelnevast sõltumatu.
-- Sama `sessionId`-ga: in-memory vestlusmälu (järelküsimused).
-- Limidid: max sõnumeid akna kohta, max sessioone, TTL (vaikimisi 45 min).
-
-
-## Järelkontroll (`applyPostRules`)
-
-Rakenduse tasemel (mitte ainult promptis):
-
-- Kui mudel märgib `refused: true`, vastus asendatakse serveri **OUT_OF_SCOPE** tekstiga (mudeli `answer`/`refusalReason` ei leki).
-- Kui allikad on tühjad (dokumenti ei loetud) → **NO_SOURCE**.
-- Kui allikad on olemas, aga vastus ei ole nendega leksikaalselt kokkusobiv → **UNGROUNDED** (kontrolli saab välja lülitada: `app.agent.grounding.enabled=false` / `AGENT_GROUNDING_ENABLED=false`).
-- Kui vastus sisaldab ohtlikku väljundit (tool-leke, markerid) → **SECURITY**.
-- Kui päringul on `sessionId`, aga agent seekord dokumenti ei lugenud:
-  - kui eelmise vastuse allikad on veel mälus **ja** uus vastus sobib nendega kokku → kasutatakse neid allikaid uuesti (sh viide vastuses);
-  - vastasel juhul keeldutakse (**NO_SOURCE**); `refused: false` + tühjad sources ei ole lubatud.
-- Vastuses lubatakse allikaviiteid **ainult** failidele, mida agent selle päringu jooksul tegelikult luges (mitte mudeli väljamõeldud failinimed).
-- **Allikatega kokkusobivuse kontroll** (lihtne tekstivõrdlus, mitte “tõeline” faktikontroll):
-  1. iga link (URL) vastuses peab olema ka allika tekstis;
-  2. iga number vastuses peab olema allikas; kui numbri järel on sõna (nt *„2 tööpäeva“*), peab see sõna allikas samuti esinema;
-  3. kogu vastusest peab vähemalt **~70%** sisulistest sõnadest (vähemalt 4 tähte) leiduma allikates;
-  4. iga sisuline lause eraldi peab allikatega kattuma vähemalt **~50%** ulatuses — muidu keeldutakse.
-- Kui vastus üritab lekkida tööriistade nimesid või sisemist kataloogi, see eemaldatakse / keeldutakse.
-- Kui vastuses puudub inimloetav viide, lisatakse vajadusel `[allikas: fail.md]`.
-
-Keeldumisel on alati `sources: []`, `confidence: low` ja serveri fikseeritud `answer` + `refusalReason` (kategooriad SECURITY / OUT_OF_SCOPE / NO_SOURCE / UNGROUNDED).
+Süsteemiprompt asub failis: `src/main/resources/prompts/system-prompt.md`.
 
 
 ## Turvalisus ja põhjendused
 
-### Sisendi valideerimine enne LLM-i
+### Sisendi valideerimine enne keelemudelit
 
-- Filtreeritakse välja tühjad ja liiga pikad küsimused (max 2000 tähemärki) → HTTP 400, LLM-i ei kutsuta.
-- Kontrollitakse teadaolevaid injection-mustreid (nt *ignore previous instructions*, *you are now*, *system:*, eesti vasteid jms) → **kohe `refused: true`**, LLM-i ei saadeta.
-- Tundlike andmete kontroll (API võtme / parooli-laadsed mustrid) → refused; isikukoodi-laadsed numbrid maskitakse enne LLM-i saatmist.
+Enne kasutaja sisendi LLM-i saatmist tehakse täiendavad kontrollid ilma keelemudelita:
 
-**Põhjendus (injection):** refused-first, mitte „hoiatusega LLM-i“. Selge piir; ei raiska tokeneid ega riski, et „hoiatatud“ mudel ikkagi lekib või täidab ründejuhist.
+* Sisendi pikkuste kontroll
+* Tihti esinevate injection mustrite kontroll (nt "you are now", "unusta reeglid" jne)
+* Saladuste või paroolide kontroll sisendis
+* Isikukoodi kontroll sisendis
 
-Kui kasutaja päring sisaldab legitiimset küsimust, aga ka ründavat juhist, siis eelistatakse turvakeeldumist või ainult lubatud osa käsitlemist nii, et väliselt ette antud juhist ei täideta. Turvakeeldumistel (injection, secret) on teadlikult **sama SECURITY tekst** API-s, et kasutajale ei lekiks, milline turvareegel täpsemalt piirangu põhjustab; detailne `reasonCode` jääb logisse. Skoop-, allika- ja grounding-keeldumised kasutavad eraldi sõnumeid (parem UX, ilma turvareegleid avaldamata).
+Ründava sisendi puhul tagastatakse keelduv vastus, saladuste või isikukoodi puhul neid andmeid LLM-i ei edastata.
+
+Kui päringus on legitiimne küsimus ja ründav juhis, eelistatakse turvakeeldumist või ainult lubatud osa nii, et välist ründejuhist ei täideta. Turvakeeldumistel (injection, secret, leke) on API-s teadlikult sama SECURITY tekst, et ei lekiks, milline reegel täpselt rakendus. Detailne `reasonCode` jääb logisse.
 
 ### Prompt injection
 
-- System ja user rollid on eraldatud; kasutaja sisendit ei kasutata kunagi süsteemipromptiks.
-- Prompt keelab süsteemiprompti, toolide ja sisemiste reeglite avaldamise; järelkontroll filtreerib lekkekahtlust.
+- System ja user rollid on eraldatud
+- Süsteemiprompt keelab prompti, toolide ja sisemiste reeglite avaldamise
+- Järelkontroll püüab lekkeid kinni (nt tool nimed)
 
-### Ulatus ja tööriistad
+### Mudeli tööriistad
 
-- Mudeli jaoks on kasutatavad ainult allowlist-is olevad kindlad tööriistad.
-- Teadmusbaas on failisüsteemi sandbox (ainult base path all).
-- Faktiline vastus peab olema seotud tool’ide loetud allikatega; vastasel juhul keeldutakse või antakse tulemus, mille usaldus on madal.
+- Mudelil on ainult allowlist-tööriistad teadmusbaasi jaoks
+- Faktiline vastus peab olema seotud loetud (või sessioonist turvaliselt taaskasutatud) allikatega
 
 ### Rate limiting
 
-- Vaikimisi sees: 10 päringut minutis kliendi IP kohta (`POST /api/v1/agent/ask`).
-- Protsessisisene loendur (ei ole Redis/hajus).
-- `X-Forwarded-For` usaldamine on vaikimisi **väljas** (`AGENT_TRUST_FORWARDED_HEADERS=false`) — lülita sisse ainult usaldusväärse proxy taga.
+- Vaikimisi sisse lülitatud. 10 päringut minutis kliendi IP kohta (seadistatav), ainult `POST /api/v1/agent/ask`.
+
 
 ### Andmete töötlemine
 
-| Andmed | Käsitlus |
-|--------|----------|
-| Kasutaja küsimus | Pärast *guard*-e ja filtreid saadetakse OpenAI mudelisse (koos süsteemiprompti ja tool-tulemustega) |
-| Teadmusbaas | Staatiline markdown; secret-laadne sisu blokeeritakse/maskitakse toolides |
-| Logid | Täielikku küsimust ei logita; injection puhul `sessionHash`, `reasonCode`, pikkus |
-| sessionId | Logides hashitud |
-| API vead | Correlation ID logis ja osaliselt kliendile (5xx) |
-| `OPENAI_API_KEY` | Ainult keskkonnamuutuja / secret — **mitte repos** |
+* Kasutaja sisend/küsimus saadetakse peale guard-e/filtreid OpenAI mudelisse
+* Terviklikku küsimust ei logita, keeldumisel logitakse nt sessionHash, reasonCode
 
-OpenAI töötleb päringut vastavalt nende tingimustele. Ära saada päris paroole, võtmeid ega isikuandmeid.
+OpenAI töötleb andmeid vastavalt nende teenusetingimustele. Ära sisesta päris paroole, võtmeid ega detailseid isikuandmeid.
 
 
 ## Disainiotsused
 
-| Otsus | Põhjendus                                                                            |
-|-------|--------------------------------------------------------------------------------------|
-| Markdown failid repos | Lihtne auditeerida, versioonida; ei vaja välist DB-d                                 |
-| Injection → kohe refused | Selge piir, ei raiska tokeneid ega riski mudeli lekkega                              |
-| Allikad peamiselt `get_document` / `list_topics` kaudu | Search preview ei tohi olla peidetud allikas; allikaviide peab olema kontrollitav    |
-| In-memory session | Piisav järelküsimuste demoks; multi-instance vajaks Redis jms                        |
-| Eraldi `test` ja `integrationTest` | Unit alati CI-s; OpenAI kulud/võti eraldi                                            |
-| Temperature 0.2 | Stabiilsemad FAQ vastused                                                            |
-| Järelkontroll rakenduses, mitte ainult promptis | LLM võib eksida; `sources` ja keeldumised peavad olema rakenduse reeglitega sunnitud |
+| Otsus                                           | Põhjendus                                                                                                             |
+|-------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| Teadmusbaas: markdown failid repositooriumis    | Lihtne demo jaoks kasutada ja versioneerida                                                                           |
+| Tuvastatud injection → vastus kohe `refused`      | Konkreetne sisendi piir, vähem tokenite kulutamist, väiksem lekke-/allumise risk                                      |
+| In-memory session + rate limit                  | Piisav demoks ja ühe instantsi jaoks, multi-instance vajaks jagatud salvestust                                        |
+| Mudeli temperatuuri parameeter  0.2             | Stabiilsemad, vähem „loovad“ mudeli vastused                                                                          |
+| Järelkontroll rakenduses, mitte ainult promptis | LLM võib eksida; `sources` ja keeldumised peavad olema reeglitega sunnitud                                            |
+| Hybrid grounding                                | Lexical püüab kindlad hallutsinatsioonid (numbrid/URL-id); judge pehmendab parafraase ilma hard-reegleid lõdvendamata |
+| Ühtne SECURITY tekst API-s                      | Ei anna ründajale tagasisidet, milline filter rakendus                                                                |
 
 
 ## Teadaolevad piirangud ja puudused
 
-- Teadmusbaasi otsinguks on kasutusel lihtne full-scan. Suure andmemahu, sünonüümide või ebatäpse keele puhul võib tulemus olla nõrk; semantiline RAG / Lucene puudub teadlikult.
-- Mudeli *grounding* on heuristiline (sõnade kattuvus). See ei tõesta fakte loogiliselt — mudel võib segada kasutaja antud valeväiteid allikaviidetega, kui nende kattuvus on piisavalt suur.
-- Tundlike andmete filtreerimine toimub regex-i põhiselt; see ei kata kõiki võimalikke mustreid ja kombinatsioone.
-- Rakendus hoiab sessioonide infot mälus. Teades teise kasutaja `sessionId`-d on võimalus mudelilt kätte saada teise kasutaja eelneva sessiooni infot. Mälus hoitav sessiooniinfo ei püsi peale rakenduse taaskäivitamist ega ole jagatud mitme rakendusinstantsi vahel.
-- Rate limit loendurit hoitakse mälus ja samuti ei püsi peale rakenduse taaskäivitamist ega ole jagatud mitme rakendusinstantsi vahel.
-- Teadmusbaasi allikates kasutatav `excerpt` on võetud faili algusest ja ei pruugi alati olla täpne vastuse lõik.
-- Erinevate mudelite puhul võib käitumine erineda, system prompt ja post-rules leevendavad seda, kuid ei garanteeri täielikku stabiilsust.
-- Turvakeeldumistel on hetkel teadlikult üldine põhjus, et kasutajale ei lekiks, milline turvareegel täpsemalt piirangu põhjustab.
+- **Otsing** on lihtne full-scan. Suure mahu, sünonüümide või ebatäpse sõnastuse korral võib tabavus olla nõrk.
+- **Grounding** on kihiline heuristika (lexical + valikuline LLM judge). Hybrid lisab soft-faili korral latentsust ja kulu.
+- **Tundlike andmete** tuvastus on regex-põhine ega kata kõiki võimalikke mustreid
+- **Sessioonid** on mälus, taaskäivitus kustutab need, mitu instantsi ei jaga seisu, `sessionId` teadmine võimaldab teise vestluse konteksti kuritarvitamist (puudub päris autentimine).
+- **Rate limit** on samuti protsessisisene — sama piirang taaskäivituse ja multi-instance kohta.
+- Allika **excerpt** on tüüpiliselt faili algusest (pikkuse piiranguga) ega pruugi olla just see lõik, millest vastus tuli.
+- Erinevad mudelid käituvad erineval. System prompt ja post-rules leevendavad seda, aga ei garanteeri täielikku stabiilsust.
+- Turvakeeldumise põhjus on kasutajale teadlikult üldine, diagnoosimiseks tuleb vaadata logisid (`reasonCode`, correlation id).
