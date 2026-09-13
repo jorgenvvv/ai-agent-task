@@ -17,6 +17,7 @@ class HealthControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
+    // API-03
     @Test
     void healthReturns200() throws Exception {
         mockMvc.perform(get("/api/v1/health"))
