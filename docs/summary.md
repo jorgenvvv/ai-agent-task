@@ -54,10 +54,13 @@ Valikuline väli `sessionId` (1–100 märki, muster `[a-zA-Z0-9_-]`).
 
 Rakenduse tasemel (mitte ainult promptis):
 
-- Kui mudeli vastus on refused ja allikad on tühjad, keeldutakse vastamast.
+- Kui mudel märgib `refused: true`, vastus asendatakse serveri **OUT_OF_SCOPE** tekstiga (mudeli `answer`/`refusalReason` ei leki).
+- Kui allikad on tühjad (dokumenti ei loetud) → **NO_SOURCE**.
+- Kui allikad on olemas, aga vastus ei ole nendega leksikaalselt kokkusobiv → **UNGROUNDED**.
+- Kui vastus sisaldab ohtlikku väljundit (tool-leke, markerid) → **SECURITY**.
 - Kui päringul on `sessionId`, aga agent seekord dokumenti ei lugenud:
   - kui eelmise vastuse allikad on veel mälus **ja** uus vastus sobib nendega kokku → kasutatakse neid allikaid uuesti (sh viide vastuses);
-  - vastasel juhul võib vastus tulla tühjade allikatega ja `confidence: low` (prompt juhib mudelit siiski alati `get_document` kutsuma).
+  - vastasel juhul keeldutakse (**NO_SOURCE**); `refused: false` + tühjad sources ei ole lubatud.
 - Vastuses lubatakse allikaviiteid **ainult** failidele, mida agent selle päringu jooksul tegelikult luges (mitte mudeli väljamõeldud failinimed).
 - **Allikatega kokkusobivuse kontroll** (lihtne tekstivõrdlus, mitte “tõeline” faktikontroll):
   1. iga link (URL) vastuses peab olema ka allika tekstis;
@@ -66,6 +69,8 @@ Rakenduse tasemel (mitte ainult promptis):
   4. iga sisuline lause eraldi peab allikatega kattuma vähemalt **~50%** ulatuses — muidu keeldutakse.
 - Kui vastus üritab lekkida tööriistade nimesid või sisemist kataloogi, see eemaldatakse / keeldutakse.
 - Kui vastuses puudub inimloetav viide, lisatakse vajadusel `[allikas: fail.md]`.
+
+Keeldumisel on alati `sources: []`, `confidence: low` ja serveri fikseeritud `answer` + `refusalReason` (kategooriad SECURITY / OUT_OF_SCOPE / NO_SOURCE / UNGROUNDED).
 
 
 ## Turvalisus ja põhjendused
@@ -78,7 +83,7 @@ Rakenduse tasemel (mitte ainult promptis):
 
 **Põhjendus (injection):** refused-first, mitte „hoiatusega LLM-i“. Selge piir; ei raiska tokeneid ega riski, et „hoiatatud“ mudel ikkagi lekib või täidab ründejuhist.
 
-Kui kasutaja päring sisaldab legitiimset küsimust, aga ka ründavat juhist, siis eelistatakse turvakeeldumist või ainult lubatud osa käsitlemist nii, et väliselt ette antud juhist ei täideta. Turvakeeldumistel on teadlikult üldine põhjus, et kasutajale ei lekiks, milline turvareegel täpsemalt piirangu põhjustab.
+Kui kasutaja päring sisaldab legitiimset küsimust, aga ka ründavat juhist, siis eelistatakse turvakeeldumist või ainult lubatud osa käsitlemist nii, et väliselt ette antud juhist ei täideta. Turvakeeldumistel (injection, secret) on teadlikult **sama SECURITY tekst** API-s, et kasutajale ei lekiks, milline turvareegel täpsemalt piirangu põhjustab; detailne `reasonCode` jääb logisse. Skoop-, allika- ja grounding-keeldumised kasutavad eraldi sõnumeid (parem UX, ilma turvareegleid avaldamata).
 
 ### Prompt injection
 

@@ -8,6 +8,7 @@ import ee.smit.aiagent.model.AskResponse;
 import ee.smit.aiagent.model.SourceDto;
 import ee.smit.aiagent.model.GuardDecision;
 import ee.smit.aiagent.model.GuardReasonCode;
+import ee.smit.aiagent.model.RefusalCategory;
 import ee.smit.aiagent.security.InputGuardService;
 import ee.smit.aiagent.security.SensitiveDataRedactor;
 import ee.smit.aiagent.security.SessionIdHasher;
@@ -42,9 +43,6 @@ public class AgentService {
             "\\[\\s*allikas\\s*:\\s*([^\\]]+?)\\s*\\]",
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
-    private static final String DEFAULT_REFUSAL_ANSWER =
-            "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
-    private static final String UNIVERSAL_REFUSAL_REASON = "Keeldutud turvapoliitika alusel";
     static final String PROVIDER_FAILURE_MESSAGE = "AI provider request failed";
 
     private static final Pattern FUNCTION_CATALOG_PATTERN = Pattern.compile(
@@ -162,7 +160,8 @@ public class AgentService {
     }
 
     static AskResponse refusedResponse(GuardReasonCode reasonCode) {
-        return sanitizedRefusal();
+        // Detailed code stays in logs only; API always uses SECURITY text.
+        return sanitizedRefusal(RefusalCategory.SECURITY);
     }
 
     String resolveSessionKey(String sessionId) {
@@ -208,24 +207,26 @@ public class AgentService {
 
     static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources) {
         List<SourceDto> sources = sanitizeSources(toolSources);
-        boolean refused = llm.refused();
         String answer = llm.answer() != null ? llm.answer() : "";
-        String confidence = normalizeConfidence(llm.confidence(), refused);
-        if (!refused && sources.isEmpty()) {
-            refused = true;
-        }
+        String confidence = normalizeConfidence(llm.confidence(), llm.refused());
 
-        if (!refused) {
+        RefusalCategory category = null;
+        if (llm.refused()) {
+            // Model-initiated refuse is treated as out of scope; never echo model texts.
+            category = RefusalCategory.OUT_OF_SCOPE;
+        } else if (sources.isEmpty()) {
+            category = RefusalCategory.NO_SOURCE;
+        } else {
             answer = sanitizeCitations(answer, sources);
             if (containsUnsafeOutput(answer)) {
-                refused = true;
+                category = RefusalCategory.SECURITY;
             } else if (!isGroundedInSources(answer, sources)) {
-                refused = true;
+                category = RefusalCategory.UNGROUNDED;
             }
         }
 
-        if (refused) {
-            return sanitizedRefusal();
+        if (category != null) {
+            return sanitizedRefusal(category);
         }
 
         if (!StringUtils.hasText(confidence)) {
@@ -235,8 +236,14 @@ public class AgentService {
         return new AskResponse(answer, sources, confidence, false, null);
     }
 
-    static AskResponse sanitizedRefusal() {
-        return new AskResponse(DEFAULT_REFUSAL_ANSWER, List.of(), "low", true, UNIVERSAL_REFUSAL_REASON);
+    static AskResponse sanitizedRefusal(RefusalCategory category) {
+        RefusalCategory resolved = category != null ? category : RefusalCategory.SECURITY;
+        return new AskResponse(
+                resolved.answer(),
+                List.of(),
+                "low",
+                true,
+                resolved.refusalReason());
     }
 
     static boolean isGroundedInSources(String answer, List<SourceDto> sources) {
