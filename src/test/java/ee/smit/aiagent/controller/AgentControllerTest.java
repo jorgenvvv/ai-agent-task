@@ -33,6 +33,7 @@ class AgentControllerTest {
     @MockitoBean
     private AgentService agentService;
 
+    // API-01
     @Test
     void emptyQuestionReturns400() throws Exception {
         mockMvc.perform(post("/api/v1/agent/ask")
@@ -54,6 +55,7 @@ class AgentControllerTest {
         verify(agentService, never()).ask(any());
     }
 
+    // API-02
     @Test
     void missingQuestionReturns400() throws Exception {
         mockMvc.perform(post("/api/v1/agent/ask")
@@ -75,6 +77,7 @@ class AgentControllerTest {
         verify(agentService, never()).ask(any());
     }
 
+    // SEC-07
     @Test
     void questionOverMaxLengthReturns400BeforeService() throws Exception {
         String longQuestion = "a".repeat(3001);

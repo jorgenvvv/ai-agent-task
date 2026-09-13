@@ -2,6 +2,7 @@ package ee.smit.aiagent.agent;
 
 import ee.smit.aiagent.model.AgentLlmResponse;
 import ee.smit.aiagent.model.AskResponse;
+import ee.smit.aiagent.model.RefusalCategory;
 import ee.smit.aiagent.model.SourceDto;
 import org.junit.jupiter.api.Test;
 
@@ -13,9 +14,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentServicePostRulesTest {
 
-    private static final String DEFAULT_REFUSAL_ANSWER =
-            "Kahjuks ei saa ma selle päringuga jätkata. Palun esita tavaline küsimus IT teenuste teadmusbaasi kohta.";
-    private static final String UNIVERSAL_REFUSAL_REASON = "Keeldutud turvapoliitika alusel";
+    private static final String SECURITY_ANSWER = RefusalCategory.SECURITY.answer();
+    private static final String SECURITY_REASON = RefusalCategory.SECURITY.refusalReason();
+    private static final String OUT_OF_SCOPE_ANSWER = RefusalCategory.OUT_OF_SCOPE.answer();
+    private static final String OUT_OF_SCOPE_REASON = RefusalCategory.OUT_OF_SCOPE.refusalReason();
+    private static final String NO_SOURCE_ANSWER = RefusalCategory.NO_SOURCE.answer();
+    private static final String NO_SOURCE_REASON = RefusalCategory.NO_SOURCE.refusalReason();
+    private static final String UNGROUNDED_ANSWER = RefusalCategory.UNGROUNDED.answer();
+    private static final String UNGROUNDED_REASON = RefusalCategory.UNGROUNDED.refusalReason();
 
     @Test
     void noSourcesForcesRefused() {
@@ -30,8 +36,8 @@ class AgentServicePostRulesTest {
         assertTrue(response.refused());
         assertEquals("low", response.confidence());
         assertTrue(response.sources().isEmpty());
-        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertEquals(NO_SOURCE_REASON, response.refusalReason());
+        assertEquals(NO_SOURCE_ANSWER, response.answer());
         assertFalse(response.answer().contains("Siin on vastus ilma allikata."));
     }
 
@@ -48,10 +54,11 @@ class AgentServicePostRulesTest {
         assertTrue(response.refused());
         assertEquals("low", response.confidence());
         assertTrue(response.sources().isEmpty());
-        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
-        assertFalse(response.answer().contains("skoobist"));
-        assertFalse(response.refusalReason().contains("Skoobist"));
+        assertEquals(OUT_OF_SCOPE_REASON, response.refusalReason());
+        assertEquals(OUT_OF_SCOPE_ANSWER, response.answer());
+        // Model payload must not leak; server OUT_OF_SCOPE text is allowed to mention skoop.
+        assertFalse(response.answer().contains("See teema on skoobist väljas."));
+        assertFalse(response.refusalReason().contains("Skoobist väljas"));
     }
 
     @Test
@@ -65,8 +72,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, List.of());
 
         assertTrue(response.refused());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
-        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertEquals(OUT_OF_SCOPE_ANSWER, response.answer());
+        assertEquals(OUT_OF_SCOPE_REASON, response.refusalReason());
         assertTrue(response.sources().isEmpty());
         assertFalse(response.answer().contains("AUDIT_MARKER"));
         assertFalse(response.refusalReason().contains("model reason"));
@@ -80,8 +87,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, List.of());
 
         assertTrue(response.refused());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
-        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertEquals(NO_SOURCE_ANSWER, response.answer());
+        assertEquals(NO_SOURCE_REASON, response.refusalReason());
         assertFalse(response.answer().contains("list_topics"));
         assertFalse(response.answer().contains("functions"));
         assertTrue(response.sources().isEmpty());
@@ -100,7 +107,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, sources);
 
         assertTrue(response.refused());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertEquals(SECURITY_ANSWER, response.answer());
+        assertEquals(SECURITY_REASON, response.refusalReason());
         assertTrue(response.sources().isEmpty());
         assertFalse(response.answer().contains("tool_result"));
     }
@@ -199,8 +207,8 @@ class AgentServicePostRulesTest {
         assertTrue(response.refused());
         assertEquals("low", response.confidence());
         assertTrue(response.sources().isEmpty());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
-        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertEquals(NO_SOURCE_ANSWER, response.answer());
+        assertEquals(NO_SOURCE_REASON, response.refusalReason());
     }
 
     @Test
@@ -255,19 +263,21 @@ class AgentServicePostRulesTest {
     }
 
     @Test
-    void sessionTurnEmptySourcesKeepsAnswerLowConfidence() {
+    void emptySourcesAlwaysForcesRefusedEvenOnSessionTurn() {
         AgentLlmResponse llm = new AgentLlmResponse(
                 "Taotle ligipääsu teenuste portaalis.",
                 false,
                 null,
                 "high");
 
-        AskResponse response = AgentService.applyPostRules(llm, List.of(), true);
+        AskResponse response = AgentService.applyPostRules(llm, List.of());
 
-        assertFalse(response.refused());
+        assertTrue(response.refused());
         assertEquals("low", response.confidence());
         assertTrue(response.sources().isEmpty());
-        assertTrue(response.answer().contains("Taotle ligipääsu"));
+        assertEquals(NO_SOURCE_REASON, response.refusalReason());
+        assertEquals(NO_SOURCE_ANSWER, response.answer());
+        assertFalse(response.answer().contains("Taotle ligipääsu"));
     }
 
     @Test
@@ -288,7 +298,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, sources);
 
         assertTrue(response.refused(), response.toString());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
         assertFalse(response.answer().contains("5 minut"));
     }
 
@@ -309,6 +320,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, sources);
 
         assertTrue(response.refused(), response.toString());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
         assertFalse(response.answer().toLowerCase().contains("tallinn"));
     }
 
@@ -463,7 +476,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, sources);
 
         assertTrue(response.refused(), response.toString());
-        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
         assertFalse(response.answer().contains("5 minut"));
     }
 
@@ -483,6 +497,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, sources);
 
         assertTrue(response.refused(), response.toString());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
         assertFalse(response.answer().toLowerCase().contains("tallinn"));
     }
 
@@ -502,6 +518,8 @@ class AgentServicePostRulesTest {
         AskResponse response = AgentService.applyPostRules(llm, sources);
 
         assertTrue(response.refused(), response.toString());
+        assertEquals(UNGROUNDED_ANSWER, response.answer());
+        assertEquals(UNGROUNDED_REASON, response.refusalReason());
         assertFalse(response.answer().contains("audit.invalid"));
     }
 }

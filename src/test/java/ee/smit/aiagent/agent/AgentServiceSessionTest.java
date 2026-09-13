@@ -192,7 +192,7 @@ class AgentServiceSessionTest {
     }
 
     @Test
-    void emptySourcesAllowedOnSessionTurnWhenModelSkipsTools() {
+    void emptySourcesOnSessionTurnWithoutCacheForcesRefused() {
         AtomicInteger localCalls = new AtomicInteger();
         ChatModel modelWithoutTools = prompt -> {
             localCalls.incrementAndGet();
@@ -215,10 +215,10 @@ class AgentServiceSessionTest {
                 true);
 
         AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", "repeat-1"));
-        assertFalse(response.refused(), response.toString());
+        assertTrue(response.refused(), response.toString());
         assertTrue(response.sources().isEmpty(), response.toString());
         assertEquals("low", response.confidence());
-        assertTrue(response.answer().contains("Taotle ligipääsu"), response.answer());
+        assertFalse(response.answer().contains("Taotle ligipääsu"), response.answer());
         assertEquals(1, localCalls.get());
     }
 

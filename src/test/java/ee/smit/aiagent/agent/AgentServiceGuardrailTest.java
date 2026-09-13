@@ -4,6 +4,7 @@ import ee.smit.aiagent.knowledge.SessionSourcesCache;
 import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.model.AskResponse;
+import ee.smit.aiagent.model.RefusalCategory;
 import ee.smit.aiagent.model.SourceDto;
 import ee.smit.aiagent.security.InputGuardService;
 import ee.smit.aiagent.security.SensitiveDataRedactor;
@@ -96,6 +97,8 @@ class AgentServiceGuardrailTest {
         assertEquals(0, callCount.get());
         assertTrue(response.sources().isEmpty());
         assertEquals("low", response.confidence());
+        assertEquals(RefusalCategory.SECURITY.refusalReason(), response.refusalReason());
+        assertEquals(RefusalCategory.SECURITY.answer(), response.answer());
     }
 
     @Test
