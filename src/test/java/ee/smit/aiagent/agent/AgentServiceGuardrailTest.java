@@ -1,5 +1,6 @@
 package ee.smit.aiagent.agent;
 
+import ee.smit.aiagent.knowledge.SessionSourcesCache;
 import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.model.AskResponse;
@@ -80,6 +81,7 @@ class AgentServiceGuardrailTest {
                 chatClient,
                 chatMemory,
                 sourcesBuffer,
+                new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",

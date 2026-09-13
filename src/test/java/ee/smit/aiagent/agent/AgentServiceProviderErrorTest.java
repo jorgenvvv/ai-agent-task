@@ -1,5 +1,6 @@
 package ee.smit.aiagent.agent;
 
+import ee.smit.aiagent.knowledge.SessionSourcesCache;
 import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.security.InputGuardService;
@@ -34,6 +35,7 @@ class AgentServiceProviderErrorTest {
                 ChatClient.builder(failingModel).build(),
                 chatMemory,
                 new ToolSourcesBuffer(),
+                new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",

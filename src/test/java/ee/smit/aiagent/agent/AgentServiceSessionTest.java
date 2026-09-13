@@ -1,5 +1,6 @@
 package ee.smit.aiagent.agent;
 
+import ee.smit.aiagent.knowledge.SessionSourcesCache;
 import ee.smit.aiagent.knowledge.ToolSourcesBuffer;
 import ee.smit.aiagent.model.AskRequest;
 import ee.smit.aiagent.model.AskResponse;
@@ -68,6 +69,7 @@ class AgentServiceSessionTest {
                 chatClient,
                 chatMemory,
                 sourcesBuffer,
+                new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -138,6 +140,7 @@ class AgentServiceSessionTest {
                         .build()).build(),
                 chatMemory,
                 sourcesBuffer,
+                new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -175,6 +178,7 @@ class AgentServiceSessionTest {
                 ChatClient.builder(modelWithoutTools).build(),
                 chatMemory,
                 new ToolSourcesBuffer(),
+                new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -204,6 +208,7 @@ class AgentServiceSessionTest {
                 ChatClient.builder(modelWithoutTools).build(),
                 chatMemory,
                 new ToolSourcesBuffer(),
+                new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
                 "test-key",
@@ -215,5 +220,53 @@ class AgentServiceSessionTest {
         assertEquals("low", response.confidence());
         assertTrue(response.answer().contains("Taotle ligipääsu"), response.answer());
         assertEquals(1, localCalls.get());
+    }
+
+    @Test
+    void sessionRepeatReusesCachedSourcesWhenModelSkipsToolsButAnswerGrounded() {
+        AtomicInteger localCalls = new AtomicInteger();
+        ToolSourcesBuffer buffer = new ToolSourcesBuffer();
+        SessionSourcesCache cache = new SessionSourcesCache();
+
+        ChatModel model = prompt -> {
+            int n = localCalls.incrementAndGet();
+            if (n == 1) {
+                buffer.add(new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Juhi kinnitus: tavaliselt 1–2 tööpäeva."));
+            }
+            String json = """
+                    {"answer":"Taotle ligipääsu teenuste portaalis. Juhi kinnitus võtab tavaliselt 1–2 tööpäeva.","refused":false,"refusalReason":null,"confidence":"high"}
+                    """;
+            return ChatResponse.builder()
+                    .generations(List.of(new Generation(new AssistantMessage(json))))
+                    .build();
+        };
+
+        AgentService svc = new AgentService(
+                ChatClient.builder(model).build(),
+                chatMemory,
+                buffer,
+                cache,
+                new InputGuardService(),
+                new SensitiveDataRedactor(),
+                "test-key",
+                true);
+
+        String sid = "cache-reuse-1";
+        AskResponse first = svc.ask(new AskRequest("gitlab ligipääs", sid));
+        assertFalse(first.refused(), first.toString());
+        assertEquals(1, first.sources().size());
+        assertEquals("gitlab-access.md", first.sources().getFirst().file());
+        assertEquals("high", first.confidence());
+
+        AskResponse second = svc.ask(new AskRequest("gitlab ligipääs", sid));
+        assertFalse(second.refused(), second.toString());
+        assertEquals(1, second.sources().size(), second.toString());
+        assertEquals("gitlab-access.md", second.sources().getFirst().file());
+        assertTrue(second.answer().contains("[allikas: gitlab-access.md]"), second.answer());
+        assertEquals("high", second.confidence());
+        assertEquals(2, localCalls.get());
     }
 }

@@ -271,6 +271,183 @@ class AgentServicePostRulesTest {
     }
 
     @Test
+    void fakeSlaNumberInOtherwiseGoodAnswerRefused() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele. "
+                                + "Juhi kinnitus: tavaliselt 1–2 tööpäeva."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis ja esita taotlus juhi kinnitusele. "
+                        + "Maintaineri õigused antakse automaatselt 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertFalse(response.answer().contains("5 minut"));
+    }
+
+    @Test
+    void badSentenceAmongGoodOnesRefused() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele. "
+                        + "Eesti pealinn on Tallinn.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertFalse(response.answer().toLowerCase().contains("tallinn"));
+    }
+
+    @Test
+    void onlyGoodSentencesStillPass() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele. "
+                                + "Juhi kinnitus: tavaliselt 1–2 tööpäeva."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Taotle ligipääsu teenuste portaalis. Esita taotlus juhi kinnitusele. "
+                        + "Juhi kinnitus võtab tavaliselt 1–2 tööpäeva.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.refused(), response.toString());
+        assertEquals("high", response.confidence());
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]"));
+    }
+
+    @Test
+    void numberPresentInSourcePasses() {
+        List<SourceDto> sources = List.of(
+                new SourceDto(
+                        "gitlab-access.md",
+                        "GitLab ligipääs",
+                        "Juhi kinnitus: tavaliselt 1–2 tööpäeva. "
+                                + "Administraatori seadistus pärast kinnitust: kuni 1 tööpäev."));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Juhi kinnitus võtab tavaliselt 1–2 tööpäeva.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.refused(), response.toString());
+        assertEquals("high", response.confidence());
+        assertTrue(response.answer().contains("1–2") || response.answer().contains("1-2"));
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]"));
+    }
+
+    @Test
+    void fakeFiveMinutesRefusedEvenWhenDigitFiveExistsAsListIndex() {
+        String excerpt = """
+                # GitLab ligipääs
+                1. Logi sisse organisatsiooni teenuste portaali (SSO kaudu).
+                2. Vali menüüst Ligipääsutaotlus → GitLab.
+                3. Täida taotlusvorm.
+                4. Esita taotlus. Süsteem suunab selle sinu otsese juhi kinnitusele.
+                5. Pärast juhi kinnitust loob GitLabi administraator konto.
+                Juhi kinnitus: tavaliselt 1–2 tööpäeva.
+                """;
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab ligipääs", excerpt));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Logi sisse teenuste portaali ja esita taotlus juhi kinnitusele. "
+                        + "Õigused antakse 5 minutiga.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertTrue(response.refused(), response.toString());
+        assertFalse(response.answer().contains("5 minut"));
+    }
+
+    @Test
+    void realisticParaphrasedGitlabAnswerPassesWithFullExcerpt() {
+        String excerpt = """
+                # GitLab ligipääs
+                Juhend organisatsiooni sisemise GitLabi ligipääsu taotlemiseks.
+                Ligipääsu saavad taotleda kõik organisatsiooni töötajad.
+                1. Logi sisse organisatsiooni teenuste portaali (SSO kaudu).
+                2. Vali menüüst Ligipääsutaotlus → GitLab.
+                3. Täida taotlusvorm: põhjendus, soovitud roll, seotud projektide nimed.
+                4. Esita taotlus. Süsteem suunab selle sinu otsese juhi kinnitusele.
+                5. Pärast juhi kinnitust loob GitLabi administraator konto või lisab õigused.
+                Juhi kinnitus: tavaliselt 1–2 tööpäeva.
+                Administraatori seadistus pärast kinnitust: kuni 1 tööpäev.
+                """;
+        List<SourceDto> sources = List.of(
+                new SourceDto("gitlab-access.md", "GitLab ligipääs", excerpt));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "GitLabi ligipääsu saamiseks logi sisse organisatsiooni teenuste portaali SSO kaudu. "
+                        + "Vali menüüst Ligipääsutaotlus ja seejärel GitLab. "
+                        + "Täida taotlusvorm ning esita see oma otsese juhi kinnitusele. "
+                        + "Pärast kinnitust loob administraator konto või lisab õigused. "
+                        + "Juhi kinnitus võtab tavaliselt 1–2 tööpäeva.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.refused(), response.toString());
+        assertEquals("high", response.confidence());
+        assertTrue(response.answer().contains("[allikas: gitlab-access.md]"));
+    }
+
+    @Test
+    void realisticParaphrasedCodeReviewAnswerPasses() {
+        String excerpt = """
+                # Koodireview enne merge'i
+                Iga merge request (MR) protected harusse vajab vähemalt ühe approve'i teise tiimiliikme poolt.
+                Autor ei tohi ise oma MR-i approve'ida.
+                Ava GitLabis merge request ja loe kirjeldust.
+                Veendu, et CI pipeline on roheline.
+                Vaata diffi: loogikavead, turvalisus, testide olemasolu.
+                Jäta konkreetsed kommentaarid ridadele; erista blokeeriv vs soovitus.
+                Approve või request changes.
+                Esmane review: eesmärk 1 tööpäev pärast MR-i valmis märkimist.
+                """;
+        List<SourceDto> sources = List.of(
+                new SourceDto("code-review.md", "Koodireview enne merge'i", excerpt));
+        AgentLlmResponse llm = new AgentLlmResponse(
+                "Enne merge'i tee koodireview GitLabis. "
+                        + "Iga MR protected harusse vajab vähemalt ühe teise tiimiliikme approve'i. "
+                        + "Veendu et pipeline on roheline, loe diffi ja jäta kommentaarid. "
+                        + "Autor ei tohi ise approve'ida. "
+                        + "Esmane review eesmärk on 1 tööpäev.",
+                false,
+                null,
+                "high");
+
+        AskResponse response = AgentService.applyPostRules(llm, sources);
+
+        assertFalse(response.refused(), response.toString());
+        assertEquals("high", response.confidence());
+        assertTrue(response.answer().contains("[allikas: code-review.md]"));
+    }
+
+    @Test
     void unsupportedSlaFactRefused() {
         List<SourceDto> sources = List.of(
                 new SourceDto(
