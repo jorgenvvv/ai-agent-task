@@ -85,9 +85,11 @@ class AgentServiceGuardrailTest {
                 new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
+                GroundingJudge.rejectAll(),
                 "test-key",
                 true,
-                true);
+                true,
+                "lexical");
     }
 
     @Test

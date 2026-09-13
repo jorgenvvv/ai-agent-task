@@ -72,9 +72,11 @@ class AgentServiceSessionTest {
                 new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
+                GroundingJudge.rejectAll(),
                 "test-key",
                 true,
-                true);
+                true,
+                "lexical");
     }
 
     @Test
@@ -144,9 +146,11 @@ class AgentServiceSessionTest {
                 new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
+                GroundingJudge.rejectAll(),
                 "test-key",
                 false,
-                true);
+                true,
+                "lexical");
         assertNull(disabled.resolveSessionKey("valid-id"));
     }
 
@@ -183,9 +187,11 @@ class AgentServiceSessionTest {
                 new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
+                GroundingJudge.rejectAll(),
                 "test-key",
                 true,
-                true);
+                true,
+                "lexical");
 
         AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", null));
         assertTrue(response.refused(), response.toString());
@@ -214,9 +220,11 @@ class AgentServiceSessionTest {
                 new SessionSourcesCache(),
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
+                GroundingJudge.rejectAll(),
                 "test-key",
                 true,
-                true);
+                true,
+                "lexical");
 
         AskResponse response = withoutToolSources.ask(new AskRequest("Kuidas saab gitlabi", "repeat-1"));
         assertTrue(response.refused(), response.toString());
@@ -255,9 +263,11 @@ class AgentServiceSessionTest {
                 cache,
                 new InputGuardService(),
                 new SensitiveDataRedactor(),
+                GroundingJudge.rejectAll(),
                 "test-key",
                 true,
-                true);
+                true,
+                "lexical");
 
         String sid = "cache-reuse-1";
         AskResponse first = svc.ask(new AskRequest("gitlab ligipääs", sid));
