@@ -149,7 +149,7 @@ public class AgentService {
             }
         }
 
-        AskResponse response = applyPostRules(llmResponse, sources, sessionKey != null);
+        AskResponse response = applyPostRules(llmResponse, sources);
         if (sessionKey != null && !response.refused() && !response.sources().isEmpty()) {
             sessionSourcesCache.put(sessionKey, response.sources());
         }
@@ -207,15 +207,11 @@ public class AgentService {
     }
 
     static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources) {
-        return applyPostRules(llm, toolSources, false);
-    }
-
-    static AskResponse applyPostRules(AgentLlmResponse llm, List<SourceDto> toolSources, boolean sessionTurn) {
         List<SourceDto> sources = sanitizeSources(toolSources);
         boolean refused = llm.refused();
         String answer = llm.answer() != null ? llm.answer() : "";
         String confidence = normalizeConfidence(llm.confidence(), refused);
-        if (!refused && sources.isEmpty() && !sessionTurn) {
+        if (!refused && sources.isEmpty()) {
             refused = true;
         }
 
@@ -223,18 +219,13 @@ public class AgentService {
             answer = sanitizeCitations(answer, sources);
             if (containsUnsafeOutput(answer)) {
                 refused = true;
-            } else if (!sources.isEmpty() && !isGroundedInSources(answer, sources)) {
+            } else if (!isGroundedInSources(answer, sources)) {
                 refused = true;
             }
         }
 
         if (refused) {
             return sanitizedRefusal();
-        }
-
-        if (sources.isEmpty()) {
-            confidence = "low";
-            return new AskResponse(answer, List.of(), confidence, false, null);
         }
 
         if (!StringUtils.hasText(confidence)) {

@@ -255,19 +255,21 @@ class AgentServicePostRulesTest {
     }
 
     @Test
-    void sessionTurnEmptySourcesKeepsAnswerLowConfidence() {
+    void emptySourcesAlwaysForcesRefusedEvenOnSessionTurn() {
         AgentLlmResponse llm = new AgentLlmResponse(
                 "Taotle ligipääsu teenuste portaalis.",
                 false,
                 null,
                 "high");
 
-        AskResponse response = AgentService.applyPostRules(llm, List.of(), true);
+        AskResponse response = AgentService.applyPostRules(llm, List.of());
 
-        assertFalse(response.refused());
+        assertTrue(response.refused());
         assertEquals("low", response.confidence());
         assertTrue(response.sources().isEmpty());
-        assertTrue(response.answer().contains("Taotle ligipääsu"));
+        assertEquals(UNIVERSAL_REFUSAL_REASON, response.refusalReason());
+        assertEquals(DEFAULT_REFUSAL_ANSWER, response.answer());
+        assertFalse(response.answer().contains("Taotle ligipääsu"));
     }
 
     @Test
